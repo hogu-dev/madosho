@@ -61,7 +61,7 @@ madosho-keys = "madosho_server.keys_cli:main"
 madosho-users = "madosho_server.users_cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["backend/madosho", "backend/madosho_server", "madosho_cli", "research_agent", "madosho_toolserver", "madosho_mcp"]
+packages = ["alchemy", "backend/madosho", "backend/madosho_server", "madosho_cli", "research_agent", "madosho_toolserver", "madosho_mcp"]
 
 [tool.pytest.ini_options]
 addopts = "-m 'not slow'"
