@@ -79,6 +79,42 @@ def test_execute_passes_prior_draft_on_rerun(tmp_path):
     assert captured["guidance"] == "dig into June"
 
 
+def test_execute_real_path_wrapper_call_shape(tmp_path, monkeypatch):
+    """Regression for the no-run_goal_fn (real) path: the runner wrapper
+    forwards tools=None, llm=None, and should_cancel via **kw into
+    _default_run_goal, so its signature must accept-and-ignore them, and the
+    run config's budgets must thread through. Monkeypatches the module-global
+    _default_run_goal so no research_agent/LLM/subprocess is touched."""
+    rid = _seed(tmp_path)
+    with db.SessionLocal() as s:
+        run = s.get(db.AlchemyRun, rid)
+        run.config = {"llm": {"provider": "p", "model": "m"},
+                      "budget_chars": 5000, "max_rounds": 3,
+                      "max_llm_calls": 7}
+        s.commit()
+
+    got = {}
+
+    def stand_in(goal_type, spec, *, corpus, settings, guidance, prior_draft,
+                 provider, model, budget_chars, max_rounds, max_llm_calls,
+                 alchemy_run_id, tools=None, llm=None, should_cancel=None):
+        got.update(tools=tools, llm=llm, should_cancel=should_cancel,
+                   budget_chars=budget_chars, max_rounds=max_rounds,
+                   max_llm_calls=max_llm_calls)
+        return FakeResult()
+
+    monkeypatch.setattr(alchemy_exec, "_default_run_goal", stand_in)
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env())
+        assert s.get(db.AlchemyRun, rid).status == "done"
+    assert got["tools"] is None
+    assert got["llm"] is None
+    assert callable(got["should_cancel"])
+    assert got["budget_chars"] == 5000
+    assert got["max_rounds"] == 3
+    assert got["max_llm_calls"] == 7
+
+
 def test_execute_missing_llm_fails(tmp_path):
     db.configure_engine(f"sqlite:///{tmp_path/'a.db'}")
     db.create_all()
