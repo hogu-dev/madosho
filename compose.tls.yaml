@@ -1,0 +1,41 @@
+# Opt-in TLS overlay: add a Caddy reverse proxy that serves HTTPS in front of
+# all four doors. Purely additive - the plain-HTTP ports keep working exactly
+# as before, so nothing breaks and you can adopt HTTPS client by client.
+#
+#   MADOSHO_TLS_HOST=my-server docker compose -f compose.yaml -f compose.tls.yaml up
+#
+# WARNING: while plain HTTP stays open, API keys and login cookies sent to the
+# HTTP ports still cross the network unencrypted. Point remote clients at the
+# HTTPS ports; see examples/tls/README.md (including how to close the HTTP
+# ports entirely if you want HTTPS-only).
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      # The hostname or IP clients will use to reach this machine; Caddy issues
+      # its certificate for this name. localhost covers the same-machine case.
+      MADOSHO_TLS_HOST: ${MADOSHO_TLS_HOST:-localhost}
+    ports:
+      - "8443:8443"   # workbench (browsers need only this one)
+      - "8444:8444"   # control plane  (plain-HTTP twin: 8000)
+      - "8445:8445"   # query plane    (plain-HTTP twin: 8001)
+      - "8446:8446"   # toolserver     (plain-HTTP twin: 8088)
+    volumes:
+      - ./examples/tls/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      # Bring your own certificates? Uncomment, put cert.pem/key.pem in
+      # examples/tls/certs/, and switch the Caddyfile to the "own certs"
+      # variant (see examples/tls/README.md):
+      # - ./examples/tls/certs:/certs:ro
+    depends_on:
+      ui:
+        condition: service_started
+      toolserver:
+        condition: service_started
+
+volumes:
+  caddy_data:
+  caddy_config:

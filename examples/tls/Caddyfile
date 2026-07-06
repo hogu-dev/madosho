@@ -1,0 +1,40 @@
+# madosho TLS front door. Loaded by compose.tls.yaml.
+#
+# Three certificate modes (see README.md in this folder for each, worked out):
+#
+# 1. Self-signed via a local CA (the DEFAULT, below): local_certs makes Caddy
+#    issue certificates from its own local certificate authority - right for a
+#    LAN or any setup without a public domain. Clients trust ONE root
+#    certificate instead of clicking through per-port browser warnings.
+#
+# 2. Your own certificates: remove local_certs, mount your cert/key into the
+#    caddy container (see the commented volume in compose.tls.yaml), and add
+#    inside each site block:
+#        tls /certs/cert.pem /certs/key.pem
+#
+# 3. Public domain via Let's Encrypt: remove local_certs, replace the
+#    {$MADOSHO_TLS_HOST}:PORT addresses with your real (sub)domains on :443,
+#    and publish ports 80/443 on the caddy service for domain validation.
+{
+	local_certs
+}
+
+# One HTTPS port per madosho door. Browsers only need 8443: the workbench
+# proxies its own /api/* calls to the control and query planes internally.
+# 8444-8446 are for programmatic clients (CLI, MCP, agents, Open WebUI).
+
+https://{$MADOSHO_TLS_HOST}:8443 {
+	reverse_proxy ui:8080
+}
+
+https://{$MADOSHO_TLS_HOST}:8444 {
+	reverse_proxy app:8000
+}
+
+https://{$MADOSHO_TLS_HOST}:8445 {
+	reverse_proxy query:8001
+}
+
+https://{$MADOSHO_TLS_HOST}:8446 {
+	reverse_proxy toolserver:8088
+}

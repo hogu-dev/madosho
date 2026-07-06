@@ -1,0 +1,57 @@
+# madosho llm-endpoint -- EXAMPLE / sanity check, NOT a required component.
+#
+# A single multimodal Gemma 4 E4B endpoint that serves madosho's text lanes
+# (contextual chunker, eval scorer, Scrying Answer) AND the vision lane
+# (extraction head-to-head) from one server -- the "don't run two LLMs" goal.
+# Same machinery as services/vision-server: the OFFICIAL llama.cpp server image
+# in ROUTER MODE (see preset.ini) over your shared HF cache, behind an
+# OpenAI-compatible /v1 endpoint. No third-party wrapper.
+#
+#   Copy env:  cp .env.example .env   (then edit if your paths/uid differ)
+#   Up:        docker compose up -d
+#   Models:    curl http://localhost:${LLM_ENDPOINT_PORT:-8097}/v1/models
+#   Logs:      docker compose logs --tail 50
+#   Down:      docker compose down
+
+services:
+  llm-endpoint:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda   # official llama.cpp server, CUDA build, tracks master
+    container_name: madosho-llm-endpoint
+    restart: unless-stopped
+    # Run as your uid:gid so anything written into the shared cache stays owned by you,
+    # not root. Find yours with: id -u ; id -g
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      # Published on ALL host interfaces on purpose: madosho's containers reach this
+      # standalone server via host.docker.internal (the docker bridge), which a
+      # loopback-only bind would break. llama.cpp marks router mode "not for
+      # untrusted environments" -- on a LAN-exposed box, firewall this port or
+      # prefix a specific bind address here.
+      - "${LLM_ENDPOINT_PORT:-8097}:8080"
+    environment:
+      - HF_HOME=/hf
+      # llama.cpp wants a writable cache under $HOME; default HOME=/root is not writable
+      # as uid 1000. Point HOME at the mounted cache (owned by us). Model reuse still
+      # comes from HF_HOME (the HF hub cache at /hf/hub).
+      - HOME=/hf
+    # Router mode: requests pick the model by name; llama-server downloads (first use),
+    # loads, and unloads on demand. --models-max 1 = one model resident on the GPU at a
+    # time. NOTE: llama.cpp marks router mode experimental and "not for untrusted
+    # environments" -- and this port is published on ALL host interfaces (see ports:
+    # above), so firewall it from the LAN or restrict the bind if your host is shared.
+    command: >
+      --models-preset /app/preset.ini
+      --models-max 1
+      --no-webui
+      --host 0.0.0.0 --port 8080
+    volumes:
+      # Share the host HuggingFace cache (where models are downloaded) into the container.
+      - ${HF_CACHE:-${HOME}/.cache/huggingface}:/hf
+      - ./preset.ini:/app/preset.ini:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

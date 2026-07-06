@@ -1,0 +1,14 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "madosho-toy"
+version = "0.1.0"
+dependencies = ["madosho"]
+
+[project.entry-points."madosho.components"]
+"parser.toy" = "madosho_toy:ToyParser"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/madosho_toy"]

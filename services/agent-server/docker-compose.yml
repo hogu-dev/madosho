@@ -1,0 +1,79 @@
+# madosho agent-server -- EXAMPLE / sanity check, NOT a required component.
+#
+# madosho's research / answer lanes talk to ANY OpenAI-compatible text endpoint (a URL) --
+# the same pluggable-provider design as the other lanes. If you already run llama.cpp /
+# vLLM / Ollama / a hosted API with a tool-calling model, skip this entirely and point
+# madosho at yours (see README).
+#
+# This stands up a known-good local GPU one: the OFFICIAL llama.cpp server image in ROUTER
+# MODE -- one endpoint, several US-developed tool-calling models (see preset.ini; requests
+# name a model and llama-server loads/unloads on demand, one resident at a time). No
+# third-party wrapper, and the image tracks llama.cpp master so tool-call parsers stay
+# fresh. It reuses your shared HF cache, and JOINS the running madosho network so the
+# worker reaches it BY NAME as http://agent-server:8080/v1 -- no host-gateway juggling.
+#
+# NO WEIGHTS ANYWHERE: this repo ships no weights and builds no image -- the container runs
+# the stock upstream llama.cpp image. A model's weights download on the FIRST request that
+# names it, into YOUR HuggingFace cache (the bind mount below), and that cache is the only
+# place they ever exist. Deleting them is HF-cache hygiene, not docker.
+#
+#   Copy env:  cp .env.example .env       (then edit if your paths / uid differ)
+#   Up:        docker compose up -d        (the madosho stack must already be up --
+#                                           this joins its external network `madosho_default`)
+#   Models:    curl http://localhost:${AGENT_PORT:-8098}/v1/models
+#   Logs:      docker compose logs --tail 50
+#   Down:      docker compose down
+#
+# GPU by default (the :server-cuda image + the reservation block below). No GPU? See the
+# README "No GPU?" note: swap the image to :server and use granite-4.1-3b only.
+
+name: madosho-agent-server
+
+networks:
+  madosho:
+    external: true
+    name: madosho_default
+
+services:
+  agent-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda   # official llama.cpp server, CUDA build, tracks master
+    container_name: madosho-agent-server
+    restart: unless-stopped
+    # Run as your uid:gid so anything written into the shared cache stays owned by you,
+    # not root. Find yours with: id -u ; id -g
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      # Loopback-only: this host port is just for your own curl testing (madosho's
+      # worker reaches the server in-network by name). llama.cpp marks router mode
+      # "not for untrusted environments" -- don't expose it to the LAN.
+      - "127.0.0.1:${AGENT_PORT:-8098}:8080"
+    environment:
+      - HF_HOME=/hf
+      # llama.cpp wants a writable cache under $HOME; default HOME=/root is not writable
+      # as uid 1000. Point HOME at the mounted cache (owned by us).
+      - HOME=/hf
+    # Router mode: requests pick the model by name; llama-server downloads (first use),
+    # loads, and unloads on demand. --models-max 1 = one model resident on the GPU at a
+    # time. NOTE: llama.cpp marks router mode experimental and "not for untrusted
+    # environments" -- fine here: only the madosho network and your localhost can reach it.
+    command: >
+      --models-preset /app/preset.ini
+      --models-max 1
+      --no-webui
+      --host 0.0.0.0 --port 8080
+    volumes:
+      # Share the host HuggingFace cache (where downloads land and are reused).
+      - ${HF_CACHE:-${HOME}/.cache/huggingface}:/hf
+      - ./preset.ini:/app/preset.ini:ro
+    networks:
+      madosho:
+        # the madosho worker resolves this name on the shared network.
+        aliases:
+          - agent-server
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,65 @@
+:root {
+  /* Surfaces & frame */
+  --page-bg: #b39a6c;
+  --leather: #241b12;
+  --leather-field: #322617;
+  --parchment-panel: #e6dabd;
+  --card: #efe6cf;
+  --code-bg: #272016;
+
+  /* Gilt & accents */
+  --gilt: #9c7920;
+  --gilt-bright: #d6b252;
+  --amber-grad: linear-gradient(180deg, #cc9a3a, #bb8526);
+  --amber-text: #2c1e06;
+  --oxblood: #84301f;
+  --frame-rule: rgba(156, 121, 32, 0.5);
+
+  /* Text on parchment */
+  --ink: #1f1709;
+  --ink-muted: #5a4d37;
+  --ink-faint: #796a4b;
+
+  /* Text on the leather frame */
+  --parchment-text: #f0e4c6;
+  --nav-inactive: #cebd99;
+  --nav-label: #9a855c;
+  --crumb-link: #cdbb99;
+
+  /* Type */
+  --font-serif: "Spectral", Georgia, serif;
+  --font-ui: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  background: var(--page-bg) url("/paper-texture.png") center / cover no-repeat fixed;
+}
+
+/* Bare links and native form controls only (inline styles win over these). */
+a { color: var(--oxblood); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+input:not([type="file"]), select, textarea {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink);
+  background: #fbf8ef;
+  border: 1px solid var(--frame-rule);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+textarea { resize: vertical; }
+::placeholder { color: var(--ink-faint); opacity: 0.85; }
+
+a:focus-visible, button:focus-visible,
+input:focus-visible, select:focus-visible, textarea:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--gilt-bright);
+  outline-offset: 1px;
+}

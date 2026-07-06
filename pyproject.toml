@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "madosho"
+version = "0.1.0"
+description = "Composable RAG pipeline framework"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = ["pydantic>=2.7", "pyyaml>=6.0"]
+
+[project.urls]
+Homepage = "https://github.com/hogu-dev/madosho"
+Repository = "https://github.com/hogu-dev/madosho"
+
+# Floors are tested floors: the suite runs against these versions (see
+# tests/unit/test_scaffold.py). The adapters need current APIs anyway —
+# e.g. SentenceTransformer.get_embedding_dimension() only exists from
+# sentence-transformers 5.4. Floors only, no upper pins.
+[project.optional-dependencies]
+# docling pulls pypdfium2 + docling-core, and its "standard" install already
+# ships the rapidocr OCR engine -- but NOT onnxruntime, the runtime rapidocr
+# needs to actually run. Added here so the rapidocr engine works out of the box
+# (the DEFAULT OCR engine is still tesseract; see docs/COMPLIANCE.md).
+docling = ["docling>=2.101", "onnxruntime>=1.27"]
+# easyocr is deliberately NOT in the default install (it drags in torchvision
+# and friends); enable via this extra or the compose.ocr.yaml overlay.
+ocr-easyocr = ["easyocr>=1.7"]
+lancedb = ["lancedb>=0.33", "pyarrow>=24"]
+qdrant = ["qdrant-client>=1.18"]
+# einops: some models ship custom modeling code that imports it (e.g.
+# nomic-embed-text-v1.5, stella) and sentence-transformers doesn't pull it in.
+models = ["sentence-transformers>=5.5", "einops>=0.8"]
+server = [
+    "fastapi>=0.136",
+    "uvicorn>=0.34",
+    "sqlalchemy>=2.0",
+    "psycopg[binary,pool]>=3.2",
+    "procrastinate>=3.8.1",
+    "python-multipart>=0.0.9",
+    "any-llm-sdk>=1.17",
+]
+research = ["any-llm-sdk>=1.17"]   # the standalone research_agent package's only runtime dep
+mcp = ["mcp>=1.8,<2"]                # the standalone MCP server's only runtime dep (MIT)
+container = ["docker>=7"]
+local = ["madosho[docling,lancedb,models]"]
+dev = ["pytest>=8", "fpdf2>=2.7", "build>=1.2", "packaging>=26", "testcontainers>=4.3", "httpx>=0.27", "openai>=1.40"]
+
+[project.scripts]
+madosho = "madosho.cli.main:main"
+madosho-cli = "madosho_cli.main:main"
+madosho-server = "madosho_server.entrypoints:run_server"
+madosho-worker = "madosho_server.entrypoints:run_worker"
+madosho-init = "madosho_server.entrypoints:run_init"
+madosho-query = "madosho_server.entrypoints:run_query"
+madosho-run-job = "madosho_server.entrypoints:run_job"
+madosho-toolserver = "madosho_toolserver.app:run"
+madosho-mcp = "madosho_mcp.server:run"
+madosho-keys = "madosho_server.keys_cli:main"
+madosho-users = "madosho_server.users_cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend/madosho", "backend/madosho_server", "madosho_cli", "research_agent", "madosho_toolserver", "madosho_mcp"]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: integration tests needing models/IO; run with -m slow",
+    "authed: test requires auth flag ON; autouse conftest sets MADOSHO_AUTH_ENABLED=1 automatically",
+]
+testpaths = ["tests"]

@@ -1,0 +1,61 @@
+# madosho vision-server -- EXAMPLE / sanity check, NOT a required component.
+#
+# madosho's real dependency is a URL to ANY OpenAI-compatible vision endpoint (the same
+# pluggable-provider design as the text LLM lanes). If you already run llama.cpp / vLLM /
+# LM Studio / etc. with a vision model, skip this entirely and point madosho at yours
+# (see README). This compose just stands up a known-good local one and proves the
+# extraction/vision lane works end to end.
+#
+# It runs the OFFICIAL llama.cpp server image in ROUTER MODE with two Gemma 4 vision
+# judges behind one endpoint; see preset.ini. No third-party wrapper. It reuses your
+# shared HF cache, so it serves the GGUFs you already pulled with `hf download` -- no
+# second copy.
+#
+#   Copy env:  cp .env.example .env   (then edit if your paths/uid differ)
+#   Up:        docker compose up -d
+#   Models:    curl http://localhost:${VISION_PORT:-8095}/v1/models
+#   Logs:      docker compose logs --tail 50
+#   Down:      docker compose down
+
+services:
+  vision-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda   # official llama.cpp server, CUDA build, tracks master
+    container_name: madosho-vision-server
+    restart: unless-stopped
+    # Run as your uid:gid so anything written into the shared cache stays owned by you,
+    # not root. Find yours with: id -u ; id -g
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      # Published on ALL host interfaces on purpose: madosho's containers reach this
+      # standalone server via host.docker.internal (the docker bridge), which a
+      # loopback-only bind would break. llama.cpp marks router mode "not for
+      # untrusted environments" -- on a LAN-exposed box, firewall this port or
+      # prefix a specific bind address here.
+      - "${VISION_PORT:-8095}:8080"
+    environment:
+      - HF_HOME=/hf
+      # llama.cpp wants a writable cache under $HOME; default HOME=/root is not writable
+      # as uid 1000. Point HOME at the mounted cache (owned by us). Model reuse still
+      # comes from HF_HOME (the HF hub cache at /hf/hub).
+      - HOME=/hf
+    # Router mode: requests pick the model by name; llama-server downloads (first use),
+    # loads, and unloads on demand. --models-max 1 = one model resident on the GPU at a
+    # time. NOTE: llama.cpp marks router mode experimental and "not for untrusted
+    # environments" -- and this port is published on ALL host interfaces (see ports:
+    # above), so firewall it from the LAN or restrict the bind if your host is shared.
+    command: >
+      --models-preset /app/preset.ini
+      --models-max 1
+      --no-webui
+      --host 0.0.0.0 --port 8080
+    volumes:
+      # Share the host HuggingFace cache (where models are downloaded) into the container.
+      - ${HF_CACHE:-${HOME}/.cache/huggingface}:/hf
+      - ./preset.ini:/app/preset.ini:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

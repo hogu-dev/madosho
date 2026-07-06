@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "madosho": {
+      "command": "madosho-mcp",
+      "env": {
+        "MADOSHO_QUERY_URL": "http://madosho-host:8001",
+        "MADOSHO_CONTROL_URL": "http://madosho-host:8000",
+        "MADOSHO_API_KEY": "PASTE-YOUR-KEY-HERE"
+      }
+    }
+  }
+}

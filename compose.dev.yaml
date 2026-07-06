@@ -1,0 +1,83 @@
+# Dev hot-reload layer. Opt-in, checked into the public repo. Turn it on with:
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up
+#
+# It does ONE thing: run the services from the live working tree instead of the
+# frozen image, so a code edit shows up without a rebuild.
+#
+#   * Backend (app / query / worker / toolserver): bind-mount the source over the
+#     pip-installed copy, put it first on PYTHONPATH, and run under `watchfiles`
+#     so editing a .py restarts just that service in ~2s.
+#   * ui: a Vite dev server (browser HMR) instead of the baked nginx image.
+#
+# This file is deliberately CLEAN -- no image overrides (it inherits the clean
+# `madosho:local` built by compose.yaml), no LLM endpoints, no ports changes.
+# Anything dev-LOCAL (the opt-in plugin overlay images, your own LLM endpoints,
+# a custom host port) belongs in a personal, gitignored compose.override.yaml
+# layered on top -- NOT here.
+name: madosho
+
+# Bind-mount the live working tree OVER the image's baked copy; the matching
+# PYTHONPATH (/app/backend:/app) puts it first on sys.path. The engine (`madosho`)
+# and `madosho_server` live under ./backend; the other packages sit at the root.
+# Container import paths come from the Dockerfile COPYs:
+#   /app/backend/{madosho,madosho_server} + /app/{madosho_cli,madosho_mcp,
+#   madosho_toolserver,research_agent}.
+x-src-mounts: &src-mounts
+  - ./backend:/app/backend
+  - ./madosho_cli:/app/madosho_cli
+  - ./madosho_mcp:/app/madosho_mcp
+  - ./madosho_toolserver:/app/madosho_toolserver
+  - ./research_agent:/app/research_agent
+
+services:
+  init:
+    # run schema setup from the mounted source too, so DB changes apply on `up`
+    volumes: *src-mounts
+    environment:
+      PYTHONPATH: /app/backend:/app
+
+  app:
+    volumes: *src-mounts
+    environment:
+      PYTHONPATH: /app/backend:/app
+    command: ["watchfiles", "--filter", "python", "madosho-server", "/app"]
+
+  query:
+    volumes: *src-mounts
+    environment:
+      PYTHONPATH: /app/backend:/app
+    command: ["watchfiles", "--filter", "python", "madosho-query", "/app"]
+
+  worker:
+    volumes: *src-mounts
+    environment:
+      PYTHONPATH: /app/backend:/app
+    # A worker restart reloads the embedder model (~10-20s). If that churn is
+    # annoying while you iterate on non-worker code, comment out this command and
+    # restart the worker by hand (`docker compose restart worker`) when needed.
+    command: ["watchfiles", "--filter", "python", "madosho-worker", "/app"]
+
+  toolserver:
+    # Run from the mounted source with uvicorn --reload, mirroring the watchfiles
+    # hot-reload the other backend services get.
+    volumes: *src-mounts
+    environment:
+      PYTHONPATH: /app/backend:/app
+    command: ["python", "-m", "uvicorn", "madosho_toolserver.app:app",
+              "--host", "0.0.0.0", "--port", "8088",
+              "--reload", "--reload-dir", "/app"]
+
+  ui:
+    build: !reset null          # drop the inherited nginx build for dev
+    image: node:22-alpine
+    working_dir: /web
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 8080"
+    volumes:
+      - ./frontend:/web
+      - /web/node_modules       # keep the container's musl-built deps off the host tree
+    environment:
+      # Vite proxies /api/* to these (mirrors frontend/nginx.conf). Service names
+      # resolve on the compose network.
+      VITE_PROXY_CONTROL: http://app:8000
+      VITE_PROXY_QUERY: http://query:8001

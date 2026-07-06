@@ -1,0 +1,224 @@
+name: madosho
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: madosho
+      POSTGRES_PASSWORD: madosho        # dev only
+      POSTGRES_DB: madosho
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U madosho -d madosho"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  qdrant:
+    image: qdrant/qdrant:latest         # pin a concrete tag in production
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      # Qdrant images ship no curl/wget; probe the HTTP port with bash /dev/tcp
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: madosho:local                # built once here; app + worker reuse it
+    command: ["madosho-init"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://madosho:madosho@postgres:5432/madosho
+      QDRANT_URL: http://qdrant:6333
+      # Headless first-admin: if both are set in .env and no active admin exists,
+      # the init one-shot seeds one. Idempotent; safe to leave configured.
+      MADOSHO_BOOTSTRAP_ADMIN_USER: ${MADOSHO_BOOTSTRAP_ADMIN_USER:-}
+      MADOSHO_BOOTSTRAP_ADMIN_PASSWORD: ${MADOSHO_BOOTSTRAP_ADMIN_PASSWORD:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    image: madosho:local
+    command: ["madosho-server"]
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://madosho:madosho@postgres:5432/madosho
+      QDRANT_URL: http://qdrant:6333
+      FILESTORE_DIR: /data/filestore
+      CORPORA_DIR: /data/corpora
+      HF_HOME: /models
+      # Index-time LLM (contextual chunker) + shared LLM creds. Seeds the
+      # llm_endpoint registry on first boot; blank leaves the registry empty.
+      MADOSHO_INDEX_LLM_PROVIDER: ${MADOSHO_INDEX_LLM_PROVIDER:-}
+      MADOSHO_INDEX_LLM_MODEL: ${MADOSHO_INDEX_LLM_MODEL:-}
+      MADOSHO_LLM_API_KEY: ${MADOSHO_LLM_API_KEY:-}
+      MADOSHO_LLM_API_BASE: ${MADOSHO_LLM_API_BASE:-}
+      # Auth config (read by both the control and query planes). SESSION_SECRET
+      # MUST match query's so a cookie minted here validates there; unset falls
+      # back to a per-process random value (sessions die on restart / across
+      # replicas). AUTH_ENABLED defaults on. COOKIE_INSECURE=1 only for non-TLS dev.
+      MADOSHO_AUTH_ENABLED: ${MADOSHO_AUTH_ENABLED:-}
+      MADOSHO_SESSION_SECRET: ${MADOSHO_SESSION_SECRET:-}
+      MADOSHO_COOKIE_INSECURE: ${MADOSHO_COOKIE_INSECURE:-}
+    volumes:
+      - filestore:/data/filestore
+      - corpora:/data/corpora
+      - hf_cache:/models
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  query:
+    image: madosho:local
+    command: ["madosho-query"]
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql+psycopg://madosho:madosho@postgres:5432/madosho
+      QDRANT_URL: http://qdrant:6333
+      FILESTORE_DIR: /data/filestore   # required by Settings; query plane never reads it (filestore volume intentionally not mounted)
+      CORPORA_DIR: /data/corpora
+      HF_HOME: /models
+      # Pluggable provider (no default). Set these in the shell/.env to enable
+      # the answer/proxy path; blank keeps retrieval-only /query working.
+      MADOSHO_INDEX_LLM_PROVIDER: ${MADOSHO_INDEX_LLM_PROVIDER:-}
+      MADOSHO_INDEX_LLM_MODEL: ${MADOSHO_INDEX_LLM_MODEL:-}
+      MADOSHO_LLM_API_KEY: ${MADOSHO_LLM_API_KEY:-}
+      MADOSHO_LLM_API_BASE: ${MADOSHO_LLM_API_BASE:-}
+      # Must match app's auth config: the query plane validates the SAME session
+      # cookie, so SESSION_SECRET has to be identical (.env provides one value to both).
+      MADOSHO_AUTH_ENABLED: ${MADOSHO_AUTH_ENABLED:-}
+      MADOSHO_SESSION_SECRET: ${MADOSHO_SESSION_SECRET:-}
+      MADOSHO_COOKIE_INSECURE: ${MADOSHO_COOKIE_INSECURE:-}
+    volumes:
+      - corpora:/data/corpora
+      - hf_cache:/models
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health').status==200 else 1)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  toolserver:
+    image: madosho:local
+    command: ["madosho-toolserver"]
+    ports:
+      - "8088:8088"
+    environment:
+      # Pure HTTP client - reaches the planes by service name (same vars the CLI reads).
+      MADOSHO_CONTROL_URL: http://app:8000
+      MADOSHO_QUERY_URL: http://query:8001
+    depends_on:
+      app:
+        condition: service_healthy
+      query:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8088/health').status==200 else 1)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  worker:
+    image: madosho:local
+    command: ["madosho-worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://madosho:madosho@postgres:5432/madosho
+      QDRANT_URL: http://qdrant:6333
+      FILESTORE_DIR: /data/filestore
+      CORPORA_DIR: /data/corpora
+      HF_HOME: /models
+      # The research worker spawns `python -m madosho_cli`, which reads these to
+      # reach the running planes; and builds the agent LLM endpoint from the creds.
+      MADOSHO_CONTROL_URL: http://app:8000
+      MADOSHO_QUERY_URL: http://query:8001
+      MADOSHO_LLM_API_KEY: ${MADOSHO_LLM_API_KEY:-}
+      MADOSHO_LLM_API_BASE: ${MADOSHO_LLM_API_BASE:-}
+      # The worker is a server-side service that calls the gated planes via
+      # madosho_cli; it carries a service key (MADOSHO_AUTH_ENABLED defaults on).
+      MADOSHO_API_KEY: ${MADOSHO_API_KEY:-}
+    volumes:
+      - filestore:/data/filestore       # SAME volume as app: worker reads uploaded files
+      - corpora:/data/corpora
+      - hf_cache:/models
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: madosho-ui:local
+    ports:
+      - "8080:8080"
+    depends_on:
+      app:
+        condition: service_healthy
+      query:
+        condition: service_healthy
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    profiles: ["frontend"]      # opt-in: `docker compose --profile frontend up`
+    ports:
+      - "3000:8080"
+    environment:
+      # Mode A (OWUI -> query :8001/v1): OWUI's connection key must be a madosho key.
+      # Auth is enforced upstream (MADOSHO_AUTH_ENABLED defaults on). Set
+      # MADOSHO_API_KEY in the shell or .env before bringing the stack up.
+      OPENAI_API_BASE_URL: http://query:8001/v1
+      OPENAI_API_KEY: ${MADOSHO_API_KEY:-}
+      # Mode B (OWUI -> toolserver :8088): set the bearer key in the OWUI UI under
+      # Admin Settings > Tools when registering the tool server URL. The tool server
+      # forwards that bearer to the backend planes - no compose env var is needed here.
+      # See examples/chat-frontends/README.md for the full Mode B walkthrough.
+      WEBUI_AUTH: "false"                 # demo-only, trusted-network (umbrella decision 4)
+    volumes:
+      - open_webui:/app/backend/data
+    depends_on:
+      query:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  qdrant_storage:
+  filestore:
+  corpora:
+  hf_cache:
+  open_webui:

@@ -1,0 +1,169 @@
+"""madosho-cli - a thin command-line client over madosho's HTTP API.
+
+Double duty: humans run it to inspect a running madosho; a research agent drives
+it (every subcommand takes --json). HTTP only - no kernel/DB imports - so it is a
+pure client that could be lifted out of this repo unchanged.
+
+--json contract: stdout carries the result JSON or nothing; all errors print to
+stderr and exit non-zero (what a tool driver keys off). Never error-JSON on stdout.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+
+from . import commands, http
+
+
+def _add_json(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--json", action="store_true",
+        help="emit machine-readable JSON (what the agent uses)",
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="madosho-cli",
+        description="Command-line client over madosho's HTTP API.",
+    )
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("list-corpora", help="list available corpora")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_list_corpora)
+
+    p = sub.add_parser("list-documents", help="list documents in a corpus")
+    p.add_argument("corpus")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_list_documents)
+
+    p = sub.add_parser("search", help="RAG retrieval over a corpus")
+    p.add_argument("corpus")
+    p.add_argument("query")
+    p.add_argument("--top-k", type=int, default=8, dest="top_k",
+                   help="max chunks to return (client-side truncation; default 8)")
+    p.add_argument("--pipeline", default=None,
+                   help="retrieve through this pipeline name (overrides each "
+                        "document's effective pipeline)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_search)
+
+    p = sub.add_parser("search-doc", help="RAG retrieval scoped to one document")
+    p.add_argument("document_id", type=int)
+    p.add_argument("query")
+    p.add_argument("--top-k", type=int, default=8, dest="top_k",
+                   help="max chunks to return (client-side truncation; default 8)")
+    p.add_argument("--pipeline", default=None,
+                   help="retrieve through this pipeline name (default: the "
+                        "document's effective pipeline)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_search_doc)
+
+    p = sub.add_parser("get-doc", help="full extracted text of one document (no RAG)")
+    p.add_argument("document_id", type=int)
+    p.add_argument("--pipeline", default=None,
+                   help="pipeline name (default: the document's effective pipeline)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_get_doc)
+
+    p = sub.add_parser("list-pipelines",
+                       help="list pipelines on a document or across a corpus")
+    p.add_argument("--corpus", default=None,
+                   help="list pipelines across this corpus's documents")
+    p.add_argument("--document-id", type=int, default=None, dest="document_id",
+                   help="list pipelines built on this one document")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_list_pipelines)
+
+    p = sub.add_parser("agent-tools",
+                       help="emit the tool manifest a research agent consumes")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_agent_tools)
+
+    # --- write subcommands ---
+
+    p = sub.add_parser("create-corpus", help="create a new corpus")
+    p.add_argument("name")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_create_corpus)
+
+    p = sub.add_parser("upload-document", help="upload a document from a local path")
+    p.add_argument("path", nargs="?", default=None,
+                   help="local file path (content source)")
+    p.add_argument("--filename", default=None,
+                   help="override stored filename (default: basename of path)")
+    p.add_argument("--corpus", default=None,
+                   help="add document to this corpus")
+    p.add_argument("--parser", default=None)
+    p.add_argument("--chunker", default=None)
+    p.add_argument("--embedder", default=None)
+    p.add_argument("--options", default=None,
+                   help="JSON object of extra parser/chunker options")
+    p.add_argument("--no-wait", action="store_true", dest="no_wait",
+                   help="return immediately after upload (do not poll for completion)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_upload_document)
+
+    p = sub.add_parser("build-pipeline", help="build a new pipeline on a document")
+    p.add_argument("document_id", type=int)
+    p.add_argument("name")
+    p.add_argument("--parser", default=None)
+    p.add_argument("--chunker", default=None)
+    p.add_argument("--embedder", default=None)
+    p.add_argument("--options", default=None,
+                   help="JSON object of extra options")
+    p.add_argument("--config", default=None,
+                   help="JSON full pipeline config (overrides individual slot flags)")
+    p.add_argument("--no-wait", action="store_true", dest="no_wait",
+                   help="return immediately after submit (do not poll for completion)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_build_pipeline)
+
+    p = sub.add_parser("add-document-to-corpus",
+                       help="associate an existing document with a corpus")
+    p.add_argument("corpus")
+    p.add_argument("document_id", type=int)
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_add_document_to_corpus)
+
+    p = sub.add_parser("document-status",
+                       help="show the current status of a document")
+    p.add_argument("document_id", type=int)
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_document_status)
+
+    p = sub.add_parser("list-runs",
+                       help="list research or eval runs for a corpus")
+    p.add_argument("corpus_id", type=int)
+    p.add_argument("--type", choices=["research", "eval"], default="research",
+                   help="run type to list (default: research)")
+    p.add_argument("--active", action="store_true",
+                   help="show only active runs (pending or running)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_list_runs)
+
+    p = sub.add_parser("cancel-run",
+                       help="cancel a research or eval run")
+    p.add_argument("run_id", type=int)
+    p.add_argument("--type", choices=["research", "eval"], default="research",
+                   help="run type (default: research)")
+    p.add_argument("--yes", action="store_true",
+                   help="skip confirmation prompt")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_cancel_run)
+
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except http.CliError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

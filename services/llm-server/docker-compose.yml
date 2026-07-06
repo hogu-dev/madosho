@@ -1,0 +1,66 @@
+# madosho llm-server -- EXAMPLE / sanity check, NOT a required component.
+#
+# madosho's answer lane talks to ANY OpenAI-compatible text endpoint (a URL) -- the same
+# pluggable-provider design as the vision lane. If you already run llama.cpp / vLLM /
+# LM Studio / Ollama / a hosted API, skip this and point madosho at yours.
+#
+# This stands up a known-good local CPU one: the OFFICIAL llama.cpp server image in
+# ROUTER MODE serving two small instruct models behind one endpoint (see preset.ini).
+# No third-party wrapper. It reuses your shared HF cache, and JOINS the running madosho
+# network so the query plane reaches it by name as http://llm-server:8080/v1 -- no
+# host-gateway juggling. The published host port is just for your own curl testing.
+#
+#   Copy env:  cp .env.example .env       (then edit if your paths / uid differ)
+#   Up:        docker compose up -d        (the madosho stack must already be up --
+#                                           this joins its external network `madosho_default`)
+#   Models:    curl http://localhost:${LLM_PORT:-8096}/v1/models   # includes llama-3.2-1b, qwen2.5-1.5b
+#   Logs:      docker compose logs --tail 50   (watch the first model load on first request)
+#   Down:      docker compose down
+#
+# Separate from services/vision-server on purpose: that one is GPU (vision judges for the
+# extraction comparison); this one is CPU (text answers for the query/proxy flow).
+
+name: madosho-llm-server
+
+networks:
+  madosho:
+    external: true
+    name: madosho_default
+
+services:
+  llm-server:
+    image: ghcr.io/ggml-org/llama.cpp:server   # official llama.cpp server, CPU build, tracks master
+    container_name: madosho-llm-server
+    restart: unless-stopped
+    # Run as your uid:gid so anything written into the shared cache stays owned by you,
+    # not root. Find yours with: id -u ; id -g
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      # Loopback-only: this host port is just for your own curl testing (madosho's
+      # query plane reaches the server in-network by name). llama.cpp marks router
+      # mode "not for untrusted environments" -- don't expose it to the LAN.
+      - "127.0.0.1:${LLM_PORT:-8096}:8080"
+    environment:
+      - HF_HOME=/hf
+      # llama.cpp wants a writable cache at $HOME/.cache/llama.cpp; default HOME=/root is
+      # not writable as uid 1000. Point HOME at the mounted cache (owned by us). Model
+      # reuse still comes from HF_HOME (the HF hub cache at /hf/hub).
+      - HOME=/hf
+    # Router mode: requests pick the model by name; llama-server downloads (first use),
+    # loads, and unloads on demand. --models-max 1 = one model resident at a time.
+    # NOTE: llama.cpp marks router mode experimental and "not for untrusted
+    # environments" -- fine here: only the madosho network and your localhost can reach it.
+    command: >
+      --models-preset /app/preset.ini
+      --models-max 1
+      --no-webui
+      --host 0.0.0.0 --port 8080
+    volumes:
+      # Share the host HuggingFace cache (where `hf download` puts models) into the container.
+      - ${HF_CACHE:-${HOME}/.cache/huggingface}:/hf
+      - ./preset.ini:/app/preset.ini:ro
+    networks:
+      madosho:
+        # madosho's query plane resolves this name on the shared network.
+        aliases:
+          - llm-server

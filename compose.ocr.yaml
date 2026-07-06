@@ -1,0 +1,32 @@
+# Opt-in OCR-extras overlay: adds the easyocr engine to the madosho image.
+#
+#   docker compose -f compose.yaml -f compose.ocr.yaml up -d --build
+#
+# The default image already covers the other two engines -- tesseract (the
+# default, apt-installed) and rapidocr (ships inside docling; see
+# docs/COMPLIANCE.md for its model-origin note). easyocr is kept out of the
+# default image only for size: it drags in torchvision and friends, and
+# downloads ~100MB of detection/recognition models on first use. Those models
+# land on the shared /models volume (MADOSHO_EASYOCR_MODELS below), so they
+# survive container recreation -- no weights are ever baked into the image.
+#
+# easyocr runs on CPU out of the box. For GPU acceleration, uncomment the
+# deploy block under `worker` (requires the NVIDIA container toolkit).
+services:
+  init:
+    build:
+      args:
+        PIP_EXTRAS: ocr-easyocr
+  app:
+    environment:
+      MADOSHO_EASYOCR_MODELS: /models/easyocr
+  worker:
+    environment:
+      MADOSHO_EASYOCR_MODELS: /models/easyocr
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]

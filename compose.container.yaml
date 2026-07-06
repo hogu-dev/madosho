@@ -1,0 +1,53 @@
+# compose.container.yaml
+# Opt-in backend B: per-job containers via a scoped socket-proxy.
+#   docker compose -f compose.yaml -f compose.container.yaml up
+# The worker stays unprivileged; only the proxy touches the host socket.
+#
+# Network isolation: socket-proxy is placed on a dedicated internal network
+# (executor_control) that only the worker can reach. This prevents any other
+# service on the main compose network (toolserver, open-webui, etc.) from
+# reaching tcp://socket-proxy:2375 and creating host-root containers without
+# first compromising the worker itself.
+#
+# The worker keeps its default network attachment so it still reaches postgres,
+# qdrant, app, and query. Job containers launched by docker-py join the main
+# (madosho_default) network via MADOSHO_JOB_NETWORK -- that is unrelated to
+# how the worker talks to the proxy.
+
+services:
+  socket-proxy:
+    image: lscr.io/linuxserver/socket-proxy:latest
+    environment:
+      CONTAINERS: "1"     # list/inspect containers
+      POST: "1"           # allow create/start/stop (write)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /run
+    networks:
+      - executor_control  # isolated; not reachable from the main compose network
+
+  worker:
+    environment:
+      MADOSHO_JOB_EXECUTOR_RESEARCH: container   # research runs get isolated containers
+      MADOSHO_DOCKER_HOST: tcp://socket-proxy:2375
+      MADOSHO_JOB_IMAGE: madosho:local
+      MADOSHO_JOB_NETWORK: ${MADOSHO_JOB_NETWORK:-madosho_default}
+      MADOSHO_JOB_MOUNTS: "madosho_filestore:/data/filestore,madosho_corpora:/data/corpora,madosho_hf_cache:/models"
+      MADOSHO_JOB_TIMEOUT_RESEARCH: "3600"
+      MADOSHO_JOB_TIMEOUT_INGEST: "1200"
+    networks:
+      - default           # keep main network: reaches postgres/qdrant/app/query
+      - executor_control  # also reaches the socket-proxy
+    depends_on:
+      socket-proxy:
+        condition: service_started
+
+networks:
+  default: {}             # the project's implicit default network (re-declared so
+                          # the worker can name it alongside executor_control)
+  executor_control:
+    internal: true        # no external routing; only containers on this network
+                          # can reach the socket-proxy

@@ -1,0 +1,10 @@
+.venv
+.git
+__pycache__
+*.pyc
+tests
+docs
+dev
+.claude
+CLAUDE.md
+.madosho

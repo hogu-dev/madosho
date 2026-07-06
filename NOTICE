@@ -1,0 +1,22 @@
+madosho
+Copyright 2026 Hogu Development LLC (https://hogu.dev)
+
+This product is licensed under the Apache License, Version 2.0 (see the LICENSE
+file). The following notices are provided for informational purposes and, per
+Section 4(d) of the Apache License, must be reproduced by redistributors.
+
+------------------------------------------------------------------------------
+Third-party components
+------------------------------------------------------------------------------
+
+This product depends on Psycopg (the PostgreSQL adapter for Python, imported at
+runtime as `psycopg`, including the optional `psycopg-binary` build), which is
+licensed under the GNU Lesser General Public License v3.0 (LGPL-3.0-only).
+
+  Psycopg -- https://www.psycopg.org/
+  Copyright (C) The Psycopg Team
+  License: LGPL-3.0-only -- https://www.psycopg.org/license/
+
+Psycopg is used as an unmodified, separately-installed dependency; its source is
+available from the project above, and it may be replaced with a compatible copy
+in accordance with the LGPL. No Psycopg source is included or modified here.
