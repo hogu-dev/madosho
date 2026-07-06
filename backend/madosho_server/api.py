@@ -107,6 +107,17 @@ def get_enqueue_research() -> Callable[[Session, int], None]:
     return transactional_enqueue_research
 
 
+def transactional_enqueue_alchemy(session: Session, alchemy_run_id: int) -> None:
+    """Defer the alchemy run on the session's own connection so the run row and
+    the job commit together (same discipline as research)."""
+    raw = session.connection().connection.driver_connection  # psycopg.Connection
+    tasks.run_alchemy.configure(connection=raw).defer(alchemy_run_id=alchemy_run_id)
+
+
+def get_enqueue_alchemy() -> Callable[[Session, int], None]:
+    return transactional_enqueue_alchemy
+
+
 def transactional_enqueue_build_pipeline(session: Session, pipeline_id: int) -> None:
     """Defer the per-pipeline build on the session's own connection so the pipeline
     row and the job commit together. Caller commits."""
@@ -329,6 +340,7 @@ EnqueueDep = Annotated[Callable[[Session, int], None], Depends(get_enqueue)]
 ComparisonEnqueueDep = Annotated[Callable[[Session, int], None], Depends(get_enqueue_comparison)]
 EvalEnqueueDep = Annotated[Callable[[Session, int], None], Depends(get_enqueue_eval)]
 ResearchEnqueueDep = Annotated[Callable[[Session, int], None], Depends(get_enqueue_research)]
+AlchemyEnqueueDep = Annotated[Callable[[Session, int], None], Depends(get_enqueue_alchemy)]
 
 
 class PipelineCreate(BaseModel):
@@ -605,6 +617,74 @@ class ResearchRunList(BaseModel):
     prompt: str
     config: dict | None = None
     stop_reason: str | None = None
+    error: str | None = None
+    created_at: str | None = None
+    finished_at: str | None = None
+
+
+class AlchemyGoalCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    corpus_id: int
+    goal_type: str = Field(default="living-research")
+    spec: dict
+    coverage: str = Field(default="search", pattern="^(search)$")  # stage A: search only
+
+
+class AlchemyGoalRead(BaseModel):
+    id: int
+    name: str
+    corpus_id: int
+    goal_type: str
+    spec: dict
+    coverage: str
+    created_at: str | None = None
+
+
+class AlchemyRunLaunch(BaseModel):
+    coverage: str | None = None                 # defaults to the goal's coverage
+    guidance: str | None = None
+    based_on_version: int | None = None
+    llm: dict                                   # {provider, model}
+    budget_chars: int = 100_000
+    max_rounds: int = 8
+    max_llm_calls: int | None = Field(default=None, ge=1)  # optional self-cap for rate-limited upstreams
+
+
+class AlchemyFinalize(BaseModel):
+    version: int
+
+
+class AlchemyRunRead(BaseModel):
+    id: int
+    goal_id: int
+    version: int
+    status: str
+    coverage: str
+    guidance: str | None = None
+    based_on_version: int | None = None
+    progress: dict | None = None
+    stop_reason: str | None = None
+    usage: dict | None = None
+    is_final: bool = False
+    error: str | None = None
+    created_at: str | None = None
+    finished_at: str | None = None
+    draft_markdown: str | None = None           # only on the single-run GET
+    citations: list | None = None               # "
+    run_log: list | None = None                 # "
+
+
+class AlchemyRunList(BaseModel):
+    id: int
+    goal_id: int
+    version: int
+    status: str
+    coverage: str
+    guidance: str | None = None
+    based_on_version: int | None = None
+    stop_reason: str | None = None
+    usage: dict | None = None
+    is_final: bool = False
     error: str | None = None
     created_at: str | None = None
     finished_at: str | None = None
@@ -1775,6 +1855,40 @@ def _research_run_dict(run: "db.ResearchRun", with_report: bool = False) -> dict
     return out
 
 
+def _iso(dt):
+    return dt.isoformat() if dt is not None else None
+
+
+def _alchemy_goal_dict(g: "db.AlchemyGoal") -> dict:
+    return {"id": g.id, "name": g.name, "corpus_id": g.corpus_id,
+            "goal_type": g.goal_type, "spec": g.spec, "coverage": g.coverage,
+            "created_at": _iso(g.created_at)}
+
+
+def _alchemy_run_dict(r: "db.AlchemyRun", with_draft: bool = False) -> dict:
+    d = {"id": r.id, "goal_id": r.goal_id, "version": r.version,
+         "status": r.status, "coverage": r.coverage, "guidance": r.guidance,
+         "based_on_version": r.based_on_version, "progress": r.progress,
+         "stop_reason": r.stop_reason, "usage": r.usage, "is_final": r.is_final,
+         "error": r.error, "created_at": _iso(r.created_at),
+         "finished_at": _iso(r.finished_at)}
+    if with_draft:
+        d.update(draft_markdown=r.draft_markdown, citations=r.citations,
+                 run_log=r.run_log)
+    return d
+
+
+def _resolve_goal(session, ref: str):
+    """A goal ref is its numeric id or its unique name."""
+    g = None
+    if ref.isdigit():
+        g = session.get(db.AlchemyGoal, int(ref))
+    if g is None:
+        g = session.scalars(select(db.AlchemyGoal)
+                            .where(db.AlchemyGoal.name == ref)).first()
+    return g
+
+
 def _proposal_dict(p: "db.ConfigProposal") -> dict:
     return {"id": p.id, "corpus_id": p.corpus_id, "eval_run_id": p.eval_run_id,
             "proposed_config": p.proposed_config, "evidence": p.evidence,
@@ -1870,6 +1984,139 @@ def cancel_research(run_id: int, session: SessionDep):
     run = session.get(db.ResearchRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="research run not found")
+    if run.status in ("pending", "running"):
+        run.status = "cancelled"
+        session.commit()
+    return {"status": run.status}
+
+
+# ---- alchemy endpoints -----------------------------------------------------
+@app.post("/alchemy/goals", status_code=201, response_model=AlchemyGoalRead)
+def create_alchemy_goal(body: AlchemyGoalCreate, session: SessionDep):
+    if session.get(db.Corpus, body.corpus_id) is None:
+        raise HTTPException(status_code=404, detail="corpus not found")
+    # stage A accepts only living-research; report is stage B
+    if body.goal_type != "living-research":
+        raise HTTPException(status_code=400,
+                            detail="stage A supports goal_type 'living-research' only")
+    if not (body.spec or {}).get("goal", "").strip():
+        raise HTTPException(status_code=400, detail="spec.goal is required")
+    if _resolve_goal(session, body.name) is not None:
+        raise HTTPException(status_code=409, detail="goal name already exists")
+    goal = db.AlchemyGoal(name=body.name, corpus_id=body.corpus_id,
+                          goal_type=body.goal_type, spec=body.spec,
+                          coverage=body.coverage)
+    session.add(goal)
+    session.commit()
+    session.refresh(goal)
+    return _alchemy_goal_dict(goal)
+
+
+@app.get("/alchemy/goals", response_model=list[AlchemyGoalRead])
+def list_alchemy_goals(session: SessionDep):
+    goals = session.scalars(select(db.AlchemyGoal)
+                            .order_by(db.AlchemyGoal.id.desc())).all()
+    return [_alchemy_goal_dict(g) for g in goals]
+
+
+@app.get("/alchemy/goals/{ref}", response_model=AlchemyGoalRead)
+def get_alchemy_goal(ref: str, session: SessionDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    return _alchemy_goal_dict(g)
+
+
+@app.delete("/alchemy/goals/{ref}", response_model=StatusResponse)
+def delete_alchemy_goal(ref: str, session: SessionDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    session.query(db.AlchemyRun).filter(db.AlchemyRun.goal_id == g.id).delete()
+    session.delete(g)
+    session.commit()
+    return {"status": "deleted"}
+
+
+@app.post("/alchemy/goals/{ref}/runs", status_code=201, response_model=AlchemyRunRead)
+def start_alchemy_run(ref: str, body: AlchemyRunLaunch, session: SessionDep,
+                      enqueue: AlchemyEnqueueDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    if not body.llm.get("provider") or not body.llm.get("model"):
+        raise HTTPException(status_code=400, detail="llm provider and model are required")
+    last = session.scalars(select(db.AlchemyRun)
+                           .where(db.AlchemyRun.goal_id == g.id)
+                           .order_by(db.AlchemyRun.version.desc())).first()
+    version = (last.version + 1) if last else 1
+    prior_draft_version = body.based_on_version
+    if prior_draft_version is None and last is not None and last.draft_markdown:
+        prior_draft_version = last.version   # default: revise the latest that has a draft
+    run = db.AlchemyRun(
+        goal_id=g.id, version=version, status="pending",
+        coverage=body.coverage or g.coverage, guidance=body.guidance,
+        based_on_version=prior_draft_version,
+        progress={"phase": "pending"},
+        config={"llm": body.llm, "budget_chars": body.budget_chars,
+                "max_rounds": body.max_rounds, "max_llm_calls": body.max_llm_calls})
+    session.add(run)
+    session.flush()
+    enqueue(session, run.id)
+    session.commit()
+    session.refresh(run)
+    return _alchemy_run_dict(run)
+
+
+@app.get("/alchemy/goals/{ref}/runs", response_model=list[AlchemyRunList])
+def list_alchemy_runs(ref: str, session: SessionDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    runs = session.scalars(select(db.AlchemyRun)
+                           .where(db.AlchemyRun.goal_id == g.id)
+                           .order_by(db.AlchemyRun.version.desc())).all()
+    return [_alchemy_run_dict(r) for r in runs]
+
+
+@app.get("/alchemy/goals/{ref}/runs/{version}", response_model=AlchemyRunRead)
+def get_alchemy_run(ref: str, version: int, session: SessionDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    run = session.scalars(select(db.AlchemyRun)
+                          .where(db.AlchemyRun.goal_id == g.id,
+                                 db.AlchemyRun.version == version)).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="run version not found")
+    return _alchemy_run_dict(run, with_draft=True)
+
+
+@app.post("/alchemy/goals/{ref}/finalize", response_model=AlchemyRunRead)
+def finalize_alchemy_run(ref: str, body: AlchemyFinalize, session: SessionDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    run = session.scalars(select(db.AlchemyRun)
+                          .where(db.AlchemyRun.goal_id == g.id,
+                                 db.AlchemyRun.version == body.version)).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="run version not found")
+    # one final version at a time: clear any prior final on this goal
+    session.query(db.AlchemyRun).filter(
+        db.AlchemyRun.goal_id == g.id, db.AlchemyRun.is_final == True).update(  # noqa: E712
+        {"is_final": False})
+    run.is_final = True
+    session.commit()
+    session.refresh(run)
+    return _alchemy_run_dict(run, with_draft=True)
+
+
+@app.post("/alchemy/runs/{run_id}/cancel", response_model=StatusResponse)
+def cancel_alchemy_run(run_id: int, session: SessionDep):
+    run = session.get(db.AlchemyRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
     if run.status in ("pending", "running"):
         run.status = "cancelled"
         session.commit()
