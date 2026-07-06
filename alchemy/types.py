@@ -47,6 +47,23 @@ class Usage:
 
 
 @dataclass
+class SectionResult:
+    """One section's outcome from a report run. note says WHY when unfilled
+    ("skipped: llm call cap", "cancelled", "no content produced") - the
+    honest-shortfall principle applies per section, not just per run.
+    confidence is blend_confidence's dict (level + the numbers behind it);
+    llm_calls is this unit's share of the run's accounting."""
+    key: str
+    title: str = ""
+    content: str = ""
+    filled: bool = False
+    note: str = ""
+    confidence: dict = field(default_factory=dict)
+    stop_reason: str = ""
+    llm_calls: int = 0
+
+
+@dataclass
 class GoalRunResult:
     """What one goal run produces: the draft, the loop's mechanically
     gathered citations (research_agent.Citation objects), the run log, why
@@ -56,3 +73,5 @@ class GoalRunResult:
     run_log: list[dict] = field(default_factory=list)
     stop_reason: str = "final"
     usage: Usage = field(default_factory=Usage)
+    sections: list = field(default_factory=list)   # SectionResult per template
+                                                   # section (report goals only)
