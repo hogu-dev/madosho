@@ -1999,9 +1999,14 @@ def create_alchemy_goal(body: AlchemyGoalCreate, session: SessionDep):
     if body.goal_type != "living-research":
         raise HTTPException(status_code=400,
                             detail="stage A supports goal_type 'living-research' only")
-    if not (body.spec or {}).get("goal", "").strip():
+    goal_val = (body.spec or {}).get("goal", "")
+    if not isinstance(goal_val, str) or not goal_val.strip():
         raise HTTPException(status_code=400, detail="spec.goal is required")
-    if _resolve_goal(session, body.name) is not None:
+    # name-only lookup: _resolve_goal's id-then-name resolution would spuriously
+    # match an unrelated goal by id when body.name happens to be all digits
+    existing = session.scalars(select(db.AlchemyGoal)
+                               .where(db.AlchemyGoal.name == body.name)).first()
+    if existing is not None:
         raise HTTPException(status_code=409, detail="goal name already exists")
     goal = db.AlchemyGoal(name=body.name, corpus_id=body.corpus_id,
                           goal_type=body.goal_type, spec=body.spec,
@@ -2051,8 +2056,18 @@ def start_alchemy_run(ref: str, body: AlchemyRunLaunch, session: SessionDep,
                            .order_by(db.AlchemyRun.version.desc())).first()
     version = (last.version + 1) if last else 1
     prior_draft_version = body.based_on_version
-    if prior_draft_version is None and last is not None and last.draft_markdown:
-        prior_draft_version = last.version   # default: revise the latest that has a draft
+    if prior_draft_version is None:
+        # default: revise the highest-version run of this goal that actually
+        # has a draft, not just the newest run overall (a later run may have
+        # failed before producing one)
+        draft_run = session.scalars(
+            select(db.AlchemyRun)
+            .where(db.AlchemyRun.goal_id == g.id,
+                   db.AlchemyRun.draft_markdown.isnot(None),
+                   db.AlchemyRun.draft_markdown != "")
+            .order_by(db.AlchemyRun.version.desc())).first()
+        if draft_run is not None:
+            prior_draft_version = draft_run.version
     run = db.AlchemyRun(
         goal_id=g.id, version=version, status="pending",
         coverage=body.coverage or g.coverage, guidance=body.guidance,
