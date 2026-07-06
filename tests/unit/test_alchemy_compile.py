@@ -89,3 +89,34 @@ def test_living_research_still_single_body_section():
     assert [s.key for s in cg.sections] == ["body"]
     assert cg.sections[0].title == ""
     assert cg.title == ""
+
+
+def test_report_section_key_collision_avoided():
+    """Regression: headings that slug to foo/foo-2/foo should get distinct keys.
+
+    When a heading like "Foo 2" slugs to "foo-2" (a suffix form), and then
+    another heading "Foo" tries to become "foo-2" (its second occurrence),
+    the dedup must avoid the collision by incrementing further.
+    """
+    template = """\
+## Foo
+
+First foo.
+
+## Foo 2
+
+This slugs to foo-2, not "Foo" plus suffix.
+
+## Foo
+
+Second foo - must not collide with "Foo 2".
+"""
+    cg = compile_spec("report", {"template": template})
+    keys = [s.key for s in cg.sections]
+    # All keys must be distinct
+    assert len(keys) == len(set(keys)), f"Duplicate keys: {keys}"
+    # The three sections should have three distinct keys
+    assert len(keys) == 3
+    # "Foo" becomes "foo", "Foo 2" becomes "foo-2" (first base "foo-2"),
+    # "Foo" again becomes "foo-3" (not "foo-2" which is taken)
+    assert keys == ["foo", "foo-2", "foo-3"]

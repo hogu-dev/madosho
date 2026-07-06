@@ -66,11 +66,15 @@ def _compile_report(spec: dict) -> CompiledGoal:
         raise ValueError(
             "report template needs at least one '## ' section heading")
     sections: list[Section] = []
-    used: dict[str, int] = {}
+    used_keys: set[str] = set()
     for heading, body_lines in raw_sections:
         base = _slug(heading)
-        used[base] = used.get(base, 0) + 1
-        key = base if used[base] == 1 else f"{base}-{used[base]}"
+        suffix = 1
+        key = base
+        while key in used_keys:
+            suffix += 1
+            key = f"{base}-{suffix}"
+        used_keys.add(key)
         instruction = "\n".join(body_lines).strip() or heading
         sections.append(Section(key=key, instruction=instruction, title=heading))
     preamble_text = "\n".join(preamble).strip()
