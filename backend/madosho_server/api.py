@@ -2128,6 +2128,14 @@ def finalize_alchemy_run(ref: str, body: AlchemyFinalize, session: SessionDep):
                                  db.AlchemyRun.version == body.version)).first()
     if run is None:
         raise HTTPException(status_code=404, detail="run version not found")
+    # finalize flags a reviewed deliverable; a run that is not done, or done
+    # with nothing to show, has nothing to flag. Export (any state) is the
+    # escape hatch, so this guard costs no capability - it prevents the
+    # almost-certain mistake of finalizing an empty draft.
+    if run.status != "done" or not (run.draft_markdown or "").strip():
+        raise HTTPException(
+            status_code=409,
+            detail="only a completed run with a draft can be finalized")
     # one final version at a time: clear any prior final on this goal
     session.query(db.AlchemyRun).filter(
         db.AlchemyRun.goal_id == g.id, db.AlchemyRun.is_final == True).update(  # noqa: E712

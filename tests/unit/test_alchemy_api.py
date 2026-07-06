@@ -241,12 +241,23 @@ def test_list_alchemy_runs_ordered_version_desc(tmp_path):
     assert [run["version"] for run in r.json()] == [2, 1]
 
 
+def _land_run(version):
+    """Mark a run done-with-draft directly in the DB (the worker's job)."""
+    with db.SessionLocal() as s:
+        run = s.query(db.AlchemyRun).filter(
+            db.AlchemyRun.version == version).first()
+        run.status = "done"
+        run.draft_markdown = "# Draft\nbody"
+        s.commit()
+
+
 def test_finalize_marks_version(tmp_path):
     client, _ = _client(tmp_path)
     cid = _corpus(client)
     _create_goal(client, cid)
     client.post("/alchemy/goals/find_vuln/runs",
                 json={"llm": {"provider": "openai", "model": "m"}})
+    _land_run(1)
     r = client.post("/alchemy/goals/find_vuln/finalize", json={"version": 1})
     assert r.status_code == 200
     assert r.json()["is_final"] is True
@@ -260,12 +271,40 @@ def test_finalize_is_exclusive_one_final_at_a_time(tmp_path):
                 json={"llm": {"provider": "openai", "model": "m"}})
     client.post("/alchemy/goals/find_vuln/runs",
                 json={"llm": {"provider": "openai", "model": "m"}})
+    _land_run(1)
+    _land_run(2)
     client.post("/alchemy/goals/find_vuln/finalize", json={"version": 1})
     client.post("/alchemy/goals/find_vuln/finalize", json={"version": 2})
     runs = {r["version"]: r["is_final"]
             for r in client.get("/alchemy/goals/find_vuln/runs").json()}
     assert runs[2] is True
     assert runs[1] is False
+
+
+def test_finalize_pending_run_409(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    client.post("/alchemy/goals/find_vuln/runs",
+                json={"llm": {"provider": "openai", "model": "m"}})
+    r = client.post("/alchemy/goals/find_vuln/finalize", json={"version": 1})
+    assert r.status_code == 409
+
+
+def test_finalize_done_but_empty_draft_409(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    client.post("/alchemy/goals/find_vuln/runs",
+                json={"llm": {"provider": "openai", "model": "m"}})
+    with db.SessionLocal() as s:
+        run = s.query(db.AlchemyRun).filter(
+            db.AlchemyRun.version == 1).first()
+        run.status = "done"
+        run.draft_markdown = "   "
+        s.commit()
+    r = client.post("/alchemy/goals/find_vuln/finalize", json={"version": 1})
+    assert r.status_code == 409
 
 
 def test_cancel_run(tmp_path):
