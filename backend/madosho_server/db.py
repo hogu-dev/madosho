@@ -274,6 +274,48 @@ class ResearchRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
 
+class AlchemyGoal(Base):
+    """A standing, named autonomous goal over a corpus. The user refers to it
+    by name (like documents/pipelines); runs version under it. spec is the raw
+    authored format (stage A: {"goal": "..."}), compiled to sections by the
+    alchemy package at run time."""
+    __tablename__ = "alchemy_goal"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    corpus_id: Mapped[int] = mapped_column(ForeignKey("corpus.id"), index=True)
+    goal_type: Mapped[str] = mapped_column(String(32))   # living-research (stage A); report (stage B)
+    spec: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)
+    coverage: Mapped[str] = mapped_column(String(16), default="search")  # search (stage A); full|exhaustive later
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AlchemyRun(Base):
+    """One attempt to fill a goal, versioned WITHIN the goal (v1, v2, ...).
+    based_on_version records which prior version a guidance rerun revised.
+    usage is the token/call accounting dict (alchemy.Usage as a dict)."""
+    __tablename__ = "alchemy_run"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    goal_id: Mapped[int] = mapped_column(ForeignKey("alchemy_goal.id"), index=True)
+    version: Mapped[int] = mapped_column(default=1)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|done|failed|cancelled
+    coverage: Mapped[str] = mapped_column(String(16), default="search")
+    guidance: Mapped[str | None] = mapped_column(Text, default=None)
+    based_on_version: Mapped[int | None] = mapped_column(default=None)
+    progress: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)      # {phase}
+    draft_markdown: Mapped[str | None] = mapped_column(Text, default=None)
+    citations: Mapped[list] = mapped_column(JSON_TYPE, default=list)
+    run_log: Mapped[list] = mapped_column(JSON_TYPE, default=list)
+    usage: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)         # {llm_calls, prompt_tokens, completion_tokens, total_tokens}
+    stop_reason: Mapped[str | None] = mapped_column(String(16), default=None)
+    is_final: Mapped[bool] = mapped_column(default=False)
+    config: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)        # {llm, budget_chars, max_rounds, max_llm_calls}
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+
 # Engine/session are process globals, configured once at startup (or per test).
 engine = None
 SessionLocal = None
