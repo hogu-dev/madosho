@@ -36,6 +36,10 @@ class FakeResult:
         self.stop_reason = "final"
         self.usage = types.SimpleNamespace(llm_calls=2, prompt_tokens=30,
                      completion_tokens=20, total_tokens=50)
+        self.sections = [{"key": "summary", "title": "Summary",
+                          "content": "ok", "filled": True, "note": "",
+                          "confidence": {"level": "medium"},
+                          "stop_reason": "final", "llm_calls": 2}]
 
 
 def test_execute_writes_draft_and_usage(tmp_path):
@@ -43,7 +47,8 @@ def test_execute_writes_draft_and_usage(tmp_path):
     seen = {}
 
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
-                      guidance=None, prior_draft=None, should_cancel=None):
+                      guidance=None, prior_draft=None, prior_sections=None,
+                      on_progress=None, should_cancel=None):
         seen.update(goal_type=goal_type, corpus=corpus, guidance=guidance,
                     prior_draft=prior_draft)
         return FakeResult()
@@ -68,7 +73,8 @@ def test_execute_passes_prior_draft_on_rerun(tmp_path):
     captured = {}
 
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
-                      guidance=None, prior_draft=None, should_cancel=None):
+                      guidance=None, prior_draft=None, prior_sections=None,
+                      on_progress=None, should_cancel=None):
         captured.update(prior_draft=prior_draft, guidance=guidance)
         return FakeResult()
 
@@ -97,7 +103,8 @@ def test_execute_real_path_wrapper_call_shape(tmp_path, monkeypatch):
 
     def stand_in(goal_type, spec, *, corpus, settings, guidance, prior_draft,
                  provider, model, budget_chars, max_rounds, max_llm_calls,
-                 alchemy_run_id, tools=None, llm=None, should_cancel=None):
+                 alchemy_run_id, tools=None, llm=None, should_cancel=None,
+                 prior_sections=None, on_progress=None):
         got.update(tools=tools, llm=llm, should_cancel=should_cancel,
                    budget_chars=budget_chars, max_rounds=max_rounds,
                    max_llm_calls=max_llm_calls)
@@ -121,7 +128,8 @@ def test_execute_honours_cancel_set_during_run(tmp_path):
     rid = _seed(tmp_path)
 
     def cancelling_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
-                            guidance=None, prior_draft=None, should_cancel=None):
+                            guidance=None, prior_draft=None, prior_sections=None,
+                            on_progress=None, should_cancel=None):
         # simulate an external cancel arriving while the goal is working, via
         # a separate session/connection (as a real API request would use)
         with db.SessionLocal() as s2:
@@ -170,3 +178,81 @@ def test_execute_missing_llm_fails(tmp_path):
         alchemy_exec.execute_alchemy_run(s, run.id, Settings.from_env(),
                                          run_goal_fn=lambda *a, **k: None)
         assert s.get(db.AlchemyRun, run.id).status == "failed"
+
+
+def test_execute_persists_sections(tmp_path):
+    rid = _seed(tmp_path)
+
+    def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
+                      guidance=None, prior_draft=None, prior_sections=None,
+                      on_progress=None, should_cancel=None):
+        return FakeResult()
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env(),
+                                         run_goal_fn=fake_run_goal)
+        run = s.get(db.AlchemyRun, rid)
+        assert run.sections[0]["key"] == "summary"
+        assert run.sections[0]["confidence"]["level"] == "medium"
+
+
+def test_execute_passes_prior_sections_on_rerun(tmp_path):
+    rid = _seed(tmp_path, based_on=1, prior_draft="old body")
+    with db.SessionLocal() as s:   # give the v1 run stored sections
+        prior = s.query(db.AlchemyRun).filter(
+            db.AlchemyRun.version == 1).first()
+        prior.sections = [{"key": "summary", "content": "old summary"}]
+        s.commit()
+    captured = {}
+
+    def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
+                      guidance=None, prior_draft=None, prior_sections=None,
+                      on_progress=None, should_cancel=None):
+        captured.update(prior_sections=prior_sections)
+        return FakeResult()
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env(),
+                                         run_goal_fn=fake_run_goal)
+    assert captured["prior_sections"] == [{"key": "summary",
+                                           "content": "old summary"}]
+
+
+def test_execute_progress_callback_writes_row(tmp_path):
+    rid = _seed(tmp_path)
+
+    def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
+                      guidance=None, prior_draft=None, prior_sections=None,
+                      on_progress=None, should_cancel=None):
+        on_progress({"phase": "running", "section": "summary",
+                     "sections_done": 0, "sections_total": 2})
+        with db.SessionLocal() as s2:
+            assert s2.get(db.AlchemyRun, rid).progress["section"] == "summary"
+        return FakeResult()
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env(),
+                                         run_goal_fn=fake_run_goal)
+        assert s.get(db.AlchemyRun, rid).status == "done"
+
+
+def test_dataclass_sections_serialized(tmp_path):
+    rid = _seed(tmp_path)
+    from alchemy.types import SectionResult
+
+    class DcResult(FakeResult):
+        def __init__(self):
+            super().__init__()
+            self.sections = [SectionResult(key="a", title="A", content="x",
+                                           filled=True,
+                                           confidence={"level": "low"})]
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(
+            s, rid, Settings.from_env(),
+            run_goal_fn=lambda *a, **kw: DcResult())
+        got = s.get(db.AlchemyRun, rid).sections
+        assert got == [{"key": "a", "title": "A", "content": "x",
+                        "filled": True, "note": "",
+                        "confidence": {"level": "low"},
+                        "stop_reason": "", "llm_calls": 0}]
