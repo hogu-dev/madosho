@@ -19,6 +19,19 @@ def _emit(data: Any) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=False))
 
 
+def _emit_or_print(args: argparse.Namespace, data: Any, human) -> None:
+    """Dispatch to _emit under --json, else print human's rendering of data.
+
+    The rest of commands.py inlines this `if args.json: _emit(...) else: ...`
+    check by hand; alchemy's handlers share so much of this shape (a single
+    dict, one human-readable line or table) that a helper pays for itself.
+    """
+    if getattr(args, "json", False):
+        _emit(data)
+    else:
+        print(human(data))
+
+
 def cmd_list_corpora(args: argparse.Namespace) -> int:
     data = core.list_corpora()
     if args.json:
@@ -248,6 +261,88 @@ def cmd_list_runs(args: argparse.Namespace) -> int:
             print("(no runs)")
         for r in runs:
             print(f"{r['id']:>4}  {r['status']:<10}  {args.type}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# alchemy subcommands (autonomous goals / living research; CLI-only, not on
+# the manifest - see manifest.py's docstring for why)
+# ---------------------------------------------------------------------------
+
+def cmd_alchemy_create(args: argparse.Namespace) -> int:
+    data = core.alchemy_create(args.name, args.corpus, args.goal,
+                               coverage=args.coverage)
+    _emit_or_print(args, data, lambda d: f"created goal {d['name']} (id {d['id']})")
+    return 0
+
+
+def cmd_alchemy_run(args: argparse.Namespace) -> int:
+    data = core.alchemy_run(args.ref, args.provider, args.model,
+                            coverage=args.coverage, guidance=args.guidance,
+                            based_on_version=args.based_on,
+                            max_llm_calls=args.max_llm_calls)
+    version = data["version"]
+    if args.no_wait:
+        _emit_or_print(args, data, lambda d: f"started {args.ref} v{d['version']} (pending)")
+        return 0
+    final = core.wait_for_alchemy_run(args.ref, version, on_event=_on_event_printer)
+    _emit_or_print(args, final,
+                   lambda d: f"{args.ref} v{d['version']}: {d['status']} "
+                             f"({(d.get('usage') or {}).get('llm_calls', 0)} llm calls)")
+    return 1 if final.get("status") == "failed" else 0
+
+
+def cmd_alchemy_status(args: argparse.Namespace) -> int:
+    version = args.run or core.alchemy_latest_version(args.ref)
+    if version is None:
+        raise http.CliError(f"no runs for goal {args.ref}")
+    data = core.alchemy_get_run(args.ref, version)
+    _emit_or_print(args, data,
+                   lambda d: f"{args.ref} v{d['version']}: {d['status']} "
+                             f"phase={(d.get('progress') or {}).get('phase')}")
+    return 0
+
+
+def cmd_alchemy_export(args: argparse.Namespace) -> int:
+    version = args.run or core.alchemy_latest_version(args.ref)
+    if version is None:
+        raise http.CliError(f"no runs for goal {args.ref}")
+    run = core.alchemy_get_run(args.ref, version)
+    md = run.get("draft_markdown") or ""
+    target = args.output or f"{args.ref}-v{version}.md"
+    with open(target, "w", encoding="utf-8") as f:
+        f.write(md)
+    print(f"wrote {target} ({len(md)} chars)")
+    return 0
+
+
+def cmd_alchemy_finalize(args: argparse.Namespace) -> int:
+    data = core.alchemy_finalize(args.ref, args.run)
+    _emit_or_print(args, data, lambda d: f"finalized {args.ref} v{d['version']}")
+    return 0
+
+
+def cmd_alchemy_list(args: argparse.Namespace) -> int:
+    data = core.alchemy_list_goals()
+    _emit_or_print(args, data,
+                   lambda rows: "\n".join(f"{g['id']}\t{g['name']}\t"
+                                          f"corpus {g['corpus_id']}" for g in rows)
+                                or "no goals")
+    return 0
+
+
+def cmd_alchemy_runs(args: argparse.Namespace) -> int:
+    data = core.alchemy_list_runs(args.ref)
+    _emit_or_print(args, data,
+                   lambda rows: "\n".join(f"v{r['version']}\t{r['status']}\t"
+                                          f"{'FINAL' if r.get('is_final') else ''}"
+                                          for r in rows) or "no runs")
+    return 0
+
+
+def cmd_alchemy_cancel(args: argparse.Namespace) -> int:
+    data = core.alchemy_cancel(args.run_id)
+    _emit_or_print(args, data, lambda d: f"run {args.run_id}: {d['status']}")
     return 0
 
 

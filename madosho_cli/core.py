@@ -276,6 +276,89 @@ def wait_for_document(
         time.sleep(interval)
 
 
+def alchemy_create(name: str, corpus: str, goal: str, goal_type: str = "living-research",
+                   coverage: str = "search") -> dict[str, Any]:
+    payload = {"name": name, "corpus_id": _resolve_corpus_id(corpus),
+               "goal_type": goal_type, "spec": {"goal": goal},
+               "coverage": coverage}
+    return http.post_json(f"{http.control_base()}/alchemy/goals", payload)
+
+
+def alchemy_run(ref: str, provider: str, model: str, *, coverage: str | None = None,
+                guidance: str | None = None, based_on_version: int | None = None,
+                budget_chars: int = 100_000, max_rounds: int = 8,
+                max_llm_calls: int | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"llm": {"provider": provider, "model": model},
+                               "budget_chars": budget_chars, "max_rounds": max_rounds}
+    if coverage:
+        payload["coverage"] = coverage
+    if guidance:
+        payload["guidance"] = guidance
+    if based_on_version is not None:
+        payload["based_on_version"] = based_on_version
+    if max_llm_calls is not None:
+        payload["max_llm_calls"] = max_llm_calls
+    return http.post_json(
+        f"{http.control_base()}/alchemy/goals/{ref}/runs", payload)
+
+
+def alchemy_get_goal(ref: str) -> dict[str, Any]:
+    return http.get_json(f"{http.control_base()}/alchemy/goals/{ref}")
+
+
+def alchemy_list_goals() -> list[dict[str, Any]]:
+    return http.get_json(f"{http.control_base()}/alchemy/goals")
+
+
+def alchemy_list_runs(ref: str) -> list[dict[str, Any]]:
+    return http.get_json(f"{http.control_base()}/alchemy/goals/{ref}/runs")
+
+
+def alchemy_get_run(ref: str, version: int) -> dict[str, Any]:
+    return http.get_json(
+        f"{http.control_base()}/alchemy/goals/{ref}/runs/{version}")
+
+
+def alchemy_finalize(ref: str, version: int) -> dict[str, Any]:
+    return http.post_json(
+        f"{http.control_base()}/alchemy/goals/{ref}/finalize",
+        {"version": version})
+
+
+def alchemy_cancel(run_id: int) -> dict[str, Any]:
+    return http.post_json(f"{http.control_base()}/alchemy/runs/{run_id}/cancel", {})
+
+
+def alchemy_latest_version(ref: str) -> int | None:
+    """Version number of a goal's newest run, or None if it has none."""
+    runs = alchemy_list_runs(ref)
+    return runs[0]["version"] if runs else None
+
+
+_ALCHEMY_TERMINAL = {"done", "failed", "cancelled"}
+
+
+def wait_for_alchemy_run(ref: str, version: int, *, on_event, interval: float = 3.0,
+                         timeout: float = 1800.0) -> dict[str, Any]:
+    """Poll a run until it reaches a terminal status (mirrors wait_for_pipeline).
+
+    on_event receives the full run dict each poll (same contract as
+    wait_for_document/wait_for_pipeline, so _on_event_printer works unchanged -
+    it reads "status" and "progress" off the top-level dict).
+    Raises CliError on timeout.
+    """
+    waited = 0.0
+    while True:
+        run = alchemy_get_run(ref, version)
+        on_event(run)
+        if run.get("status") in _ALCHEMY_TERMINAL:
+            return run
+        if waited >= timeout:
+            raise http.CliError(f"timed out waiting for run {ref} v{version}")
+        time.sleep(interval)
+        waited += interval
+
+
 def wait_for_pipeline(
     document_id: int,
     pipeline_id: int,

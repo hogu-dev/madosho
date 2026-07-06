@@ -108,3 +108,43 @@ Under `--json`:
 Any application that ships a CLI emitting a compatible `agent-tools` manifest and
 accepting `--json` subcommands can be driven by the same research agent. That is
 the reuse contract, in place of MCP.
+
+## alchemy (autonomous goals)
+
+Standing, named goals that run autonomously over a corpus and produce
+versioned, exportable drafts. CLI-only in this release (not on MCP/toolserver).
+
+```
+madosho-cli alchemy create <name> --corpus NAME --goal TEXT [--coverage search] [--json]
+madosho-cli alchemy run <ref> --provider P --model M [--coverage search]
+            [--guidance TEXT] [--based-on VERSION] [--max-llm-calls N]
+            [--no-wait] [--json]
+madosho-cli alchemy status <ref> [--run VERSION] [--json]
+madosho-cli alchemy export <ref> [--run VERSION] [-o FILE]
+madosho-cli alchemy finalize <ref> --run VERSION [--json]
+madosho-cli alchemy list [--json]
+madosho-cli alchemy runs <ref> [--json]
+madosho-cli alchemy cancel <run_id> [--json]
+```
+
+- `<ref>` is a goal's name or numeric id (`--corpus` on `create` is always a
+  **name**, resolved the same way as `list-documents`/`upload-document`).
+- `run` blocks until the run reaches a terminal status (`done`/`failed`/
+  `cancelled`), printing progress lines, and exits non-zero on `failed` -
+  pass `--no-wait` to return immediately with the pending run and poll
+  yourself with `status`. `--based-on` picks which prior version to revise;
+  default is the goal's latest version that has a draft.
+- `export`/`status` default `--run` to the goal's latest run if omitted.
+- `finalize` marks one version as the goal's canonical output (clears any
+  prior final version on that goal).
+
+Worked example:
+
+```
+madosho-cli alchemy create find_vuln --corpus secdocs --goal "map every vulnerability discussed"
+madosho-cli alchemy run find_vuln --provider openai --model gpt-4o-mini
+madosho-cli alchemy export find_vuln            # -> find_vuln-v1.md
+madosho-cli alchemy run find_vuln --provider openai --model gpt-4o-mini \
+    --guidance "dig into the 2024 incidents"    # -> v2, revises v1
+madosho-cli alchemy finalize find_vuln --run 2
+```
