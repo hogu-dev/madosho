@@ -302,10 +302,6 @@ def alchemy_run(ref: str, provider: str, model: str, *, coverage: str | None = N
         f"{http.control_base()}/alchemy/goals/{ref}/runs", payload)
 
 
-def alchemy_get_goal(ref: str) -> dict[str, Any]:
-    return http.get_json(f"{http.control_base()}/alchemy/goals/{ref}")
-
-
 def alchemy_list_goals() -> list[dict[str, Any]]:
     return http.get_json(f"{http.control_base()}/alchemy/goals")
 
@@ -347,16 +343,15 @@ def wait_for_alchemy_run(ref: str, version: int, *, on_event, interval: float = 
     it reads "status" and "progress" off the top-level dict).
     Raises CliError on timeout.
     """
-    waited = 0.0
+    start = time.monotonic()
     while True:
         run = alchemy_get_run(ref, version)
         on_event(run)
         if run.get("status") in _ALCHEMY_TERMINAL:
             return run
-        if waited >= timeout:
+        if time.monotonic() - start >= timeout:
             raise http.CliError(f"timed out waiting for run {ref} v{version}")
         time.sleep(interval)
-        waited += interval
 
 
 def wait_for_pipeline(

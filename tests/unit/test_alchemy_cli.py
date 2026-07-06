@@ -181,6 +181,24 @@ def test_run_goal_waits_until_terminal(fake_http, capsys, monkeypatch):
     assert calls["n"] >= 2
 
 
+def test_wait_for_alchemy_run_times_out(fake_http, monkeypatch):
+    """The wait loop measures elapsed wall time (monotonic), not sleep counts,
+    so slow polls cannot silently stretch the timeout budget."""
+    fake_http({
+        "/alchemy/goals/find_vuln/runs/1": _run(version=1, status="running"),
+    })
+    import madosho_cli.core as core_mod
+    from madosho_cli import http as cli_http
+    clock = {"now": 0.0}
+    monkeypatch.setattr(core_mod.time, "monotonic", lambda: clock["now"])
+    # each poll's sleep advances the fake clock; the run never leaves "running"
+    monkeypatch.setattr(core_mod.time, "sleep",
+                        lambda s: clock.__setitem__("now", clock["now"] + s))
+    with pytest.raises(cli_http.CliError, match="timed out"):
+        core_mod.wait_for_alchemy_run("find_vuln", 1, on_event=lambda _e: None,
+                                      interval=1.0, timeout=3.0)
+
+
 def test_run_goal_failed_exits_nonzero(fake_http, capsys):
     fake_http({
         "/alchemy/goals/find_vuln/runs/1": _run(version=1, status="failed",
