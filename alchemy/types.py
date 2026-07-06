@@ -12,12 +12,13 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Section:
-    """One thing to fill. Stage A (living-research) has exactly one; the
-    report goal type (stage B) will compile a template into many. key is a
-    stable identifier so later stages can attribute confidence and citations
-    per section."""
+    """One thing to fill. Living-research has exactly one (key "body", no
+    title); a report template compiles to many. key is a stable slug so
+    confidence, citations, and rerun priors attribute per section; title is
+    the human heading the renderer re-emits (empty for living-research)."""
     key: str
     instruction: str
+    title: str = ""
 
 
 @dataclass
@@ -26,9 +27,11 @@ class CompiledGoal:
     statement plus sections. The engine only ever sees this - it never knows
     whether the user authored freeform text, a markdown template, or a
     schema (that is the format layer's job, and WHY new formats cost no
-    engine changes)."""
+    engine changes). title is the report's optional H1, used only by the
+    renderer."""
     goal: str
     sections: list[Section] = field(default_factory=list)
+    title: str = ""
 
 
 @dataclass
