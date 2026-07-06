@@ -44,8 +44,59 @@ def test_create_goal_bad_corpus_404(tmp_path):
 def test_create_goal_bad_type_400(tmp_path):
     client, _ = _client(tmp_path)
     cid = _corpus(client)
-    r = _create_goal(client, cid, goal_type="report")   # stage B
+    r = _create_goal(client, cid, goal_type="unknown-type")
     assert r.status_code == 400
+
+
+REPORT_TEMPLATE = "# R\n\nintro\n\n## Summary\n\nshort.\n\n## Detail\n\nlong.\n"
+
+
+def test_create_report_goal_201(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    r = _create_goal(client, cid, goal_type="report",
+                     spec={"template": REPORT_TEMPLATE})
+    assert r.status_code == 201, r.text
+    assert r.json()["goal_type"] == "report"
+
+
+def test_create_report_goal_requires_template_400(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    r = _create_goal(client, cid, goal_type="report", spec={"goal": "x"})
+    assert r.status_code == 400
+    assert "template" in r.json()["detail"]
+
+
+def test_create_report_goal_unparseable_template_400(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    r = _create_goal(client, cid, goal_type="report",
+                     spec={"template": "no headings, just prose"})
+    assert r.status_code == 400
+    assert "section" in r.json()["detail"]
+
+
+def test_get_run_exposes_sections(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid, goal_type="report",
+                 spec={"template": REPORT_TEMPLATE})
+    rid = client.post("/alchemy/goals/find_vuln/runs",
+                      json={"llm": {"provider": "openai", "model": "m"}}).json()["id"]
+    with db.SessionLocal() as s:   # simulate the worker landing results
+        run = s.get(db.AlchemyRun, rid)
+        run.sections = [{"key": "summary", "title": "Summary",
+                         "content": "ok", "filled": True, "note": "",
+                         "confidence": {"level": "medium"},
+                         "stop_reason": "final", "llm_calls": 2}]
+        run.status = "done"
+        s.commit()
+    got = client.get("/alchemy/goals/find_vuln/runs/1").json()
+    assert got["sections"][0]["key"] == "summary"
+    # the list view stays light - no sections there
+    listed = client.get("/alchemy/goals/find_vuln/runs").json()
+    assert "sections" not in listed[0]
 
 
 def test_duplicate_name_409(tmp_path):

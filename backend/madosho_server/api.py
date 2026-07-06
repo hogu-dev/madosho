@@ -672,6 +672,7 @@ class AlchemyRunRead(BaseModel):
     draft_markdown: str | None = None           # only on the single-run GET
     citations: list | None = None               # "
     run_log: list | None = None                 # "
+    sections: list | None = None                # only on the single-run GET
 
 
 class AlchemyRunList(BaseModel):
@@ -1874,7 +1875,7 @@ def _alchemy_run_dict(r: "db.AlchemyRun", with_draft: bool = False) -> dict:
          "finished_at": _iso(r.finished_at)}
     if with_draft:
         d.update(draft_markdown=r.draft_markdown, citations=r.citations,
-                 run_log=r.run_log)
+                 run_log=r.run_log, sections=r.sections)
     return d
 
 
@@ -1995,13 +1996,23 @@ def cancel_research(run_id: int, session: SessionDep):
 def create_alchemy_goal(body: AlchemyGoalCreate, session: SessionDep):
     if session.get(db.Corpus, body.corpus_id) is None:
         raise HTTPException(status_code=404, detail="corpus not found")
-    # stage A accepts only living-research; report is stage B
-    if body.goal_type != "living-research":
-        raise HTTPException(status_code=400,
-                            detail="stage A supports goal_type 'living-research' only")
-    goal_val = (body.spec or {}).get("goal", "")
-    if not isinstance(goal_val, str) or not goal_val.strip():
-        raise HTTPException(status_code=400, detail="spec.goal is required")
+    if body.goal_type not in ("living-research", "report"):
+        raise HTTPException(
+            status_code=400,
+            detail="goal_type must be 'living-research' or 'report'")
+    if body.goal_type == "living-research":
+        goal_val = (body.spec or {}).get("goal", "")
+        if not isinstance(goal_val, str) or not goal_val.strip():
+            raise HTTPException(status_code=400, detail="spec.goal is required")
+    else:
+        # fail-fast: an uncompilable template should 400 at create time, not
+        # fail a run later. Lazy import keeps api module import light; the
+        # server importing alchemy is the allowed dependency direction.
+        from alchemy.compile import compile_spec
+        try:
+            compile_spec("report", body.spec or {})
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     # name-only lookup: _resolve_goal's id-then-name resolution would spuriously
     # match an unrelated goal by id when body.name happens to be all digits
     existing = session.scalars(select(db.AlchemyGoal)
