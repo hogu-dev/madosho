@@ -148,3 +148,40 @@ madosho-cli alchemy run find_vuln --provider openai --model gpt-4o-mini \
     --guidance "dig into the 2024 incidents"    # -> v2, revises v1
 madosho-cli alchemy finalize find_vuln --run 2
 ```
+
+### Report goals (stage B)
+
+A `report` goal fills a markdown template section by section. Author a
+template - an optional `# Title`, optional intro prose (becomes the goal
+statement), then one `## Heading` per section with its instructions
+underneath:
+
+```markdown
+# Vulnerability report
+
+Assess the corpus for security problems.
+
+## Summary
+
+One paragraph for a busy reader.
+
+## June incidents
+
+Dig into the maintenance logs; list each incident with dates.
+```
+
+```bash
+madosho-cli alchemy create vuln_report --corpus secdocs \
+    --type report --spec vuln-report.md
+madosho-cli alchemy run vuln_report --provider openai --model gpt-4o \
+    --max-llm-calls 20
+madosho-cli alchemy status vuln_report    # per-section confidence table
+madosho-cli alchemy export vuln_report    # assembled markdown draft
+```
+
+Each section runs as its own bounded work unit; `--max-llm-calls` caps the
+WHOLE run (units share the allowance). A capped run still lands a draft -
+unfilled sections say so in the export, and `stop_reason` reads `call_cap`.
+Per-section confidence is the model's self-grade capped by citation facts
+(a section citing one document never reads `high`), always reported with
+the numbers behind it.
