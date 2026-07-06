@@ -276,11 +276,11 @@ def wait_for_document(
         time.sleep(interval)
 
 
-def alchemy_create(name: str, corpus: str, goal: str, goal_type: str = "living-research",
+def alchemy_create(name: str, corpus: str, spec: dict[str, Any],
+                   goal_type: str = "living-research",
                    coverage: str = "search") -> dict[str, Any]:
     payload = {"name": name, "corpus_id": _resolve_corpus_id(corpus),
-               "goal_type": goal_type, "spec": {"goal": goal},
-               "coverage": coverage}
+               "goal_type": goal_type, "spec": spec, "coverage": coverage}
     return http.post_json(f"{http.control_base()}/alchemy/goals", payload)
 
 

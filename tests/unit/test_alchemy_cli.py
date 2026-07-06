@@ -331,3 +331,68 @@ def test_cancel_run(fake_http, capsys):
     assert out["status"] == "cancelled"
     method, url, _ = fh.calls[-1]
     assert method == "POST" and url.endswith("/alchemy/runs/9/cancel")
+
+
+def test_create_report_goal_sends_template(fake_http, tmp_path):
+    spec_file = tmp_path / "t.md"
+    spec_file.write_text("# R\n\n## Summary\n\nshort.\n", encoding="utf-8")
+    fh = fake_http({
+        "/corpora": [{"id": 3, "name": "secdocs", "config": {}}],
+        "/alchemy/goals": _goal(goal_type="report"),
+    })
+    rc = cli_main.main(["alchemy", "create", "vuln_report", "--corpus",
+                        "secdocs", "--type", "report", "--spec",
+                        str(spec_file), "--json"])
+    assert rc == 0
+    method, url, body = fh.calls[-1]
+    assert method == "POST" and url.endswith("/alchemy/goals")
+    assert body["goal_type"] == "report"
+    assert body["spec"] == {"template": "# R\n\n## Summary\n\nshort.\n"}
+
+
+def test_create_report_requires_spec(fake_http, capsys):
+    fake_http({})
+    rc = cli_main.main(["alchemy", "create", "r", "--corpus", "c",
+                        "--type", "report"])
+    assert rc != 0
+    assert "--spec" in capsys.readouterr().err
+
+
+def test_create_living_research_requires_goal(fake_http, capsys):
+    fake_http({})
+    rc = cli_main.main(["alchemy", "create", "r", "--corpus", "c"])
+    assert rc != 0
+    assert "--goal" in capsys.readouterr().err
+
+
+def test_status_renders_section_table(fake_http, capsys):
+    run = _run(status="done", version=2, progress={"phase": "done"})
+    run["sections"] = [
+        {"key": "summary", "title": "Summary", "filled": True, "note": "",
+         "confidence": {"level": "high", "distinct_docs": 3, "citations": 5}},
+        {"key": "june", "title": "June incidents", "filled": False,
+         "note": "skipped: llm call cap",
+         "confidence": {"level": "low", "distinct_docs": 0, "citations": 0}},
+    ]
+    fake_http({
+        "/alchemy/goals/vuln_report/runs/2": run,
+        "/alchemy/goals/vuln_report/runs": [run],
+    })
+    rc = cli_main.main(["alchemy", "status", "vuln_report"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Summary" in out and "high" in out
+    assert "3 docs" in out and "5 cites" in out
+    assert "not filled: skipped: llm call cap" in out
+
+
+def test_status_without_sections_unchanged(fake_http, capsys):
+    fake_http({
+        "/alchemy/goals/find_vuln/runs/1": _run(status="running",
+                                                progress={"phase": "running"}),
+        "/alchemy/goals/find_vuln/runs": [_run(status="running")],
+    })
+    rc = cli_main.main(["alchemy", "status", "find_vuln"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "find_vuln v1: running" in out

@@ -163,7 +163,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = alch_sub.add_parser("create", help="create a goal")
     p.add_argument("name")
     p.add_argument("--corpus", required=True, help="corpus name")
-    p.add_argument("--goal", required=True, help="the goal statement")
+    p.add_argument("--type", dest="goal_type", default="living-research",
+                   choices=["living-research", "report"])
+    p.add_argument("--goal", default=None,
+                   help="the goal statement (living-research)")
+    p.add_argument("--spec", dest="spec_path", default=None,
+                   help="markdown template file (report)")
     p.add_argument("--coverage", default="search", choices=["search"])
     _add_json(p)
     p.set_defaults(func=commands.cmd_alchemy_create)

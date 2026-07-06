@@ -270,7 +270,21 @@ def cmd_list_runs(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_alchemy_create(args: argparse.Namespace) -> int:
-    data = core.alchemy_create(args.name, args.corpus, args.goal,
+    if args.goal_type == "report":
+        if not args.spec_path:
+            raise http.CliError("--spec TEMPLATE.md is required for --type report")
+        try:
+            with open(args.spec_path, encoding="utf-8") as f:
+                template = f.read()
+        except OSError as e:
+            raise http.CliError(f"cannot read spec file: {e}")
+        spec = {"template": template}
+    else:
+        if not args.goal:
+            raise http.CliError("--goal is required for --type living-research")
+        spec = {"goal": args.goal}
+    data = core.alchemy_create(args.name, args.corpus, spec,
+                               goal_type=args.goal_type,
                                coverage=args.coverage)
     _emit_or_print(args, data, lambda d: f"created goal {d['name']} (id {d['id']})")
     return 0
@@ -297,9 +311,22 @@ def cmd_alchemy_status(args: argparse.Namespace) -> int:
     if version is None:
         raise http.CliError(f"no runs for goal {args.ref}")
     data = core.alchemy_get_run(args.ref, version)
-    _emit_or_print(args, data,
-                   lambda d: f"{args.ref} v{d['version']}: {d['status']} "
-                             f"phase={(d.get('progress') or {}).get('phase')}")
+
+    def _fmt(d):
+        lines = [f"{args.ref} v{d['version']}: {d['status']} "
+                 f"phase={(d.get('progress') or {}).get('phase')}"]
+        for s in d.get("sections") or []:
+            conf = s.get("confidence") or {}
+            line = (f"  {(s.get('title') or s.get('key') or ''):<28} "
+                    f"{conf.get('level', '-'):<7} "
+                    f"({conf.get('distinct_docs', 0)} docs, "
+                    f"{conf.get('citations', 0)} cites)")
+            if not s.get("filled"):
+                line += f"  not filled: {s.get('note') or '-'}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    _emit_or_print(args, data, _fmt)
     return 0
 
 
