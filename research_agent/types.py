@@ -58,9 +58,13 @@ class ToolCall:
 @dataclass
 class AssistantTurn:
     """One model turn, normalized away from any LLM client's response object.
-    text is the prose (final report when there are no tool_calls)."""
+    text is the prose (final report when there are no tool_calls).
+    usage is the provider's token accounting for THIS turn when the provider
+    reports it (prompt/completion/total tokens) - optional and unread by the
+    loop itself; consumers that meter spend (alchemy) sum it across turns."""
     text: str | None
     tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: dict | None = None
 
 
 @dataclass

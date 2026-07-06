@@ -56,4 +56,13 @@ class AnyLlmClient:
             except (json.JSONDecodeError, TypeError):
                 parsed = {}
             calls.append(ToolCall(id=tc.id, name=fn.name, arguments=parsed))
-        return AssistantTurn(text=getattr(msg, "content", None), tool_calls=calls)
+        u = getattr(resp, "usage", None)
+        usage = None
+        if u is not None:
+            usage = {
+                "prompt_tokens": getattr(u, "prompt_tokens", None),
+                "completion_tokens": getattr(u, "completion_tokens", None),
+                "total_tokens": getattr(u, "total_tokens", None),
+            }
+        return AssistantTurn(text=getattr(msg, "content", None),
+                             tool_calls=calls, usage=usage)
