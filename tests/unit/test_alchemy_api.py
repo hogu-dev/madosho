@@ -109,6 +109,18 @@ def test_run_rejects_zero_max_llm_calls_422(tmp_path):
     assert r.status_code == 422
 
 
+def test_run_rejects_unsupported_coverage_422(tmp_path):
+    """coverage="exhaustive" is not a stage-A value; the run launch body must
+    reject it the same way AlchemyGoalCreate.coverage does."""
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    r = client.post("/alchemy/goals/find_vuln/runs",
+                    json={"llm": {"provider": "openai", "model": "m"},
+                          "coverage": "exhaustive"})
+    assert r.status_code == 422
+
+
 def test_get_goal_by_id_and_name(tmp_path):
     client, _ = _client(tmp_path)
     cid = _corpus(client)

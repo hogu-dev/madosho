@@ -641,7 +641,7 @@ class AlchemyGoalRead(BaseModel):
 
 
 class AlchemyRunLaunch(BaseModel):
-    coverage: str | None = None                 # defaults to the goal's coverage
+    coverage: str | None = Field(default=None, pattern="^(search)$")  # defaults to the goal's coverage
     guidance: str | None = None
     based_on_version: int | None = None
     llm: dict                                   # {provider, model}

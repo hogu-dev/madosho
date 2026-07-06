@@ -115,6 +115,47 @@ def test_execute_real_path_wrapper_call_shape(tmp_path, monkeypatch):
     assert got["max_llm_calls"] == 7
 
 
+def test_execute_honours_cancel_set_during_run(tmp_path):
+    """If a cancel is written during the run (simulating an external API call),
+    the worker should finish with status 'cancelled', not 'done'."""
+    rid = _seed(tmp_path)
+
+    def cancelling_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
+                            guidance=None, prior_draft=None, should_cancel=None):
+        # simulate an external cancel arriving while the goal is working, via
+        # a separate session/connection (as a real API request would use)
+        with db.SessionLocal() as s2:
+            row = s2.get(db.AlchemyRun, rid)
+            row.status = "cancelled"
+            s2.commit()
+        return FakeResult()
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env(),
+                                         run_goal_fn=cancelling_run_goal)
+
+    with db.SessionLocal() as s:
+        got = s.get(db.AlchemyRun, rid)
+        assert got.status == "cancelled"
+        assert got.finished_at is not None
+        # The goal finished its work before the cancel was observed, so the
+        # draft it produced must be persisted - the flush() before the
+        # cancel-check (and the expire_all() inside it) must not discard it.
+        assert got.draft_markdown is not None
+        assert got.draft_markdown == "# Draft\nbody"
+
+
+def test_make_cancel_check_polarity(tmp_path):
+    rid = _seed(tmp_path)
+    should_cancel = alchemy_exec._make_cancel_check(rid)
+    assert should_cancel() is False   # still "pending" (not started running)
+    with db.SessionLocal() as s2:
+        row = s2.get(db.AlchemyRun, rid)
+        row.status = "cancelled"
+        s2.commit()
+    assert should_cancel() is True
+
+
 def test_execute_missing_llm_fails(tmp_path):
     db.configure_engine(f"sqlite:///{tmp_path/'a.db'}")
     db.create_all()
