@@ -396,7 +396,7 @@ def test_unit_crash_carries_prior_into_failed_section():
     assert result.stop_reason == "failed"
     june = result.sections[1]
     assert june.filled and june.content == "prior june text"
-    assert "carried from prior" in june.note and "unit failed" in june.note
+    assert june.note == "unit failed (carried prior, not revised): RuntimeError: boom"
 
 
 # --- FIX G: run-level round_cap only from units that produced nothing --------

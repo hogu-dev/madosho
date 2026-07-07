@@ -170,7 +170,7 @@ def execute_alchemy_run(session, alchemy_run_id: int, settings,
             # Mirrors how "cancelled" maps below - the living-research path
             # never returns "failed" (its exceptions propagate to the handler).
             note = next((s.get("note") for s in (run.sections or [])
-                         if (s.get("note") or "").startswith("unit failed:")),
+                         if (s.get("note") or "").startswith("unit failed")),
                         None)
             return _finish(session, run, "failed", error=note)
         _finish(session, run, "done")

@@ -267,6 +267,38 @@ def test_execute_maps_failed_stop_reason_to_failed_status(tmp_path):
         assert run.sections[0]["filled"] is True
 
 
+def test_execute_maps_failed_with_carried_prior_note_to_error(tmp_path):
+    """A rerun crash whose failing section carried prior content rewrites the
+    note as 'unit failed (carried prior, not revised): <detail>' (orchestrator
+    _carry_prior); the adapter's note match must still find it (no colon after
+    'unit failed') so run.error is not silently lost to None."""
+    rid = _seed(tmp_path)
+
+    class FailedCarriedResult(FakeResult):
+        def __init__(self):
+            super().__init__()
+            self.stop_reason = "failed"
+            self.sections = [
+                {"key": "a", "title": "A", "content": "landed", "filled": True,
+                 "note": "", "confidence": {"level": "medium"},
+                 "stop_reason": "final", "llm_calls": 2},
+                {"key": "b", "title": "B", "content": "prior text",
+                 "filled": True,
+                 "note": "unit failed (carried prior, not revised): "
+                         "RuntimeError: boom",
+                 "confidence": {"level": "low"}, "stop_reason": "failed",
+                 "llm_calls": 0}]
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(
+            s, rid, Settings.from_env(),
+            run_goal_fn=lambda *a, **kw: FailedCarriedResult())
+        run = s.get(db.AlchemyRun, rid)
+        assert run.status == "failed"
+        assert run.error is not None
+        assert "RuntimeError: boom" in run.error
+
+
 def test_dataclass_sections_serialized(tmp_path):
     rid = _seed(tmp_path)
     from alchemy.types import SectionResult

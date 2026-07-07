@@ -123,7 +123,15 @@ def _carry_prior(res: SectionResult, prior: dict | None, shortfall: str) -> None
     res.filled = True
     conf = (prior or {}).get("confidence")
     res.confidence = conf if conf else blend_confidence(None, [])
-    res.note = f"carried from prior, not revised: {shortfall}"
+    if res.note and res.note.startswith("unit failed:"):
+        # the crash detail (exception name + truncated message) was already
+        # recorded on res.note before this carry ran; keep it under the
+        # "unit failed" sentinel so the exec adapter's note match still finds
+        # run.error on a rerun that crashed but had prior content to carry
+        detail = res.note[len("unit failed:"):].strip()
+        res.note = f"unit failed (carried prior, not revised): {detail}"
+    else:
+        res.note = f"carried from prior, not revised: {shortfall}"
 
 
 def _run_report(compiled, *, corpus, tools, counting, budget, guidance,
