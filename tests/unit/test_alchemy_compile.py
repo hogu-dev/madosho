@@ -154,3 +154,56 @@ def test_slug_of_symbols_only_heading_is_section():
     # and end to end: a symbols-only heading still yields a usable key
     compiled = compile_spec("report", {"template": "## ???\n\nbody"})
     assert compiled.sections[0].key == "section"
+
+
+def test_report_fields_compile_to_sections():
+    spec = {"title": "Vuln report", "goal": "Assess the corpus.",
+            "fields": [
+                {"key": "summary", "title": "Summary",
+                 "instruction": "One paragraph for a busy reader."},
+                {"key": "incidents", "title": "Incidents",
+                 "instruction": "List each incident with dates."},
+            ]}
+    cg = compile_spec("report", spec)
+    assert cg.title == "Vuln report"
+    assert "Assess the corpus" in cg.goal
+    assert [s.key for s in cg.sections] == ["summary", "incidents"]
+    assert cg.sections[0].title == "Summary"
+    assert cg.sections[0].instruction == "One paragraph for a busy reader."
+
+
+def test_report_fields_instruction_falls_back_to_title_then_key():
+    # instruction is the fill directive; a minimal field must still tell the
+    # unit SOMETHING, so it falls back to the human title, then the bare key
+    spec = {"fields": [
+        {"key": "a", "title": "Alpha"},   # no instruction -> the title
+        {"key": "b"},                     # no instruction, no title -> the key
+    ]}
+    cg = compile_spec("report", spec)
+    assert cg.sections[0].instruction == "Alpha"
+    assert cg.sections[1].instruction == "b"
+
+
+def test_report_fields_duplicate_keys_deduped():
+    spec = {"fields": [
+        {"key": "risk", "instruction": "first"},
+        {"key": "risk", "instruction": "second"},
+    ]}
+    cg = compile_spec("report", spec)
+    assert [s.key for s in cg.sections] == ["risk", "risk-2"]
+
+
+def test_report_fields_empty_list_raises():
+    with pytest.raises(ValueError):
+        compile_spec("report", {"fields": []})
+
+
+def test_report_field_missing_key_raises():
+    with pytest.raises(ValueError):
+        compile_spec("report", {"fields": [{"title": "no key here"}]})
+
+
+def test_report_requires_template_or_fields():
+    # a report spec with NEITHER format is the API's 400 path
+    with pytest.raises(ValueError):
+        compile_spec("report", {"goal": "neither template nor fields"})

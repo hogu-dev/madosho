@@ -1,10 +1,12 @@
 """Spec compilation: every goal type collapses to the same CompiledGoal.
 
 living-research (spec = {"goal": "..."}) compiles to a single untitled
-section keyed "body". report (spec = {"template": "<markdown>"}) parses the
-template's `## ` headings into sections WITHOUT touching the orchestrator -
-that seam is the whole point of compiling. A later structured-schema format
-(stage D) is one more branch here, zero engine changes.
+section keyed "body". report has two FORMATS on the same seam: a markdown
+`template` (spec = {"template": "<markdown>"}) parses `## ` headings into
+sections, and a structured schema (spec = {"fields": [...]}) turns each typed
+field into one section. Neither format touches the orchestrator - that seam
+is the whole point of compiling, and it is why stage D's fields format cost
+zero engine changes.
 """
 from __future__ import annotations
 
@@ -39,6 +41,75 @@ def _slug(title: str) -> str:
 
 
 def _compile_report(spec: dict) -> CompiledGoal:
+    """Dispatch the report goal type to its FORMAT parser.
+
+    A report is authored in one of two formats on the SAME seam: a markdown
+    `template` (headings become sections) or a typed `fields` list (each field
+    IS a section). Both land in the identical CompiledGoal, so the engine never
+    learns which the user chose - that is why a new format costs zero engine
+    changes. `fields` is checked first so it wins if a spec somehow carries
+    both. A report spec with NEITHER key is uncompilable and raises ValueError,
+    which the API turns into a 400 at create time (api.py delegates all spec
+    validation here)."""
+    if "fields" in spec:
+        return _compile_report_fields(spec)
+    if "template" in spec:
+        return _compile_report_template(spec)
+    raise ValueError(
+        "report spec must carry either a 'template' (markdown) or "
+        "'fields' (typed list)")
+
+
+def _compile_report_fields(spec: dict) -> CompiledGoal:
+    """Typed fields -> CompiledGoal.
+
+    A field is {"key": str, "title"?: str, "instruction"?: str} and becomes
+    exactly one Section - the typed analog of a template's `## ` heading. `key`
+    is slugged and deduped identically to headings (a repeated "risk" stays
+    addressable as risk / risk-2), so confidence and citations attribute per
+    section the same way regardless of format. `title` is the human heading the
+    renderer re-emits. `instruction` is the fill directive; it is OPTIONAL and
+    falls back to the title, then the key, so a bare {"key": "summary"} is a
+    legal one-line field. Optional top-level spec["goal"] is the preamble and
+    spec["title"] is the report H1 (mirroring the template path, where those
+    come from the leading prose and `# ` line). WHY a list, not a JSON object:
+    order is the report's structure and object key order is not guaranteed
+    across producers."""
+    fields = spec.get("fields")
+    if not isinstance(fields, list) or not fields:
+        raise ValueError("report 'fields' must be a non-empty list")
+    sections: list[Section] = []
+    used_keys: set[str] = set()
+    for i, fld in enumerate(fields):
+        if not isinstance(fld, dict):
+            raise ValueError(f"report field {i} must be an object")
+        raw_key = fld.get("key")
+        base = _slug(raw_key) if isinstance(raw_key, str) and raw_key.strip() else ""
+        if not base:
+            raise ValueError(f"report field {i} must carry a non-empty 'key'")
+        # dedup exactly as the heading path does: a repeated key gets a -N
+        # suffix so every section stays individually addressable
+        suffix = 1
+        key = base
+        while key in used_keys:
+            suffix += 1
+            key = f"{base}-{suffix}"
+        used_keys.add(key)
+        raw_title = fld.get("title")
+        title = raw_title.strip() if isinstance(raw_title, str) else ""
+        raw_instr = fld.get("instruction")
+        instr = raw_instr.strip() if isinstance(raw_instr, str) else ""
+        instruction = instr or title or key
+        sections.append(Section(key=key, instruction=instruction, title=title))
+    raw_goal = spec.get("goal")
+    preamble = raw_goal.strip() if isinstance(raw_goal, str) else ""
+    raw_report_title = spec.get("title")
+    title = raw_report_title.strip() if isinstance(raw_report_title, str) else ""
+    goal = "\n\n".join(p for p in (title, preamble) if p) or _DEFAULT_REPORT_GOAL
+    return CompiledGoal(goal=goal, sections=sections, title=title)
+
+
+def _compile_report_template(spec: dict) -> CompiledGoal:
     """Markdown template -> CompiledGoal.
 
     Rules: the first `# ` line is the report title; any other prose before

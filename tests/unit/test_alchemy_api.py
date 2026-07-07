@@ -68,6 +68,24 @@ def test_create_report_goal_requires_template_400(tmp_path):
     assert "template" in r.json()["detail"]
 
 
+def test_create_report_fields_goal_201(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    r = _create_goal(client, cid, goal_type="report",
+                     spec={"title": "R", "goal": "assess it",
+                           "fields": [{"key": "summary",
+                                       "instruction": "one line."}]})
+    assert r.status_code == 201, r.text
+    assert r.json()["goal_type"] == "report"
+
+
+def test_create_report_fields_empty_400(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    r = _create_goal(client, cid, goal_type="report", spec={"fields": []})
+    assert r.status_code == 400
+
+
 def test_create_report_goal_unparseable_template_400(tmp_path):
     client, _ = _client(tmp_path)
     cid = _corpus(client)
