@@ -16,7 +16,8 @@ from .types import CompiledGoal, Section
 
 def compose_prompt(compiled: CompiledGoal, *, corpus: str,
                    guidance: str | None = None,
-                   prior_draft: str | None = None) -> str:
+                   prior_draft: str | None = None,
+                   digests_text: str | None = None) -> str:
     parts = [
         f"Research goal: {compiled.goal}",
         f"Work ONLY within corpus {corpus!r}: pass it as the corpus argument "
@@ -24,6 +25,12 @@ def compose_prompt(compiled: CompiledGoal, *, corpus: str,
         "Write a report in markdown that fulfils the goal, grounded in what "
         "you retrieve.",
     ]
+    if digests_text:
+        parts.append(
+            "Evidence digests from an exhaustive read of the corpus (mined "
+            "mechanically, doc by doc). Use them to know WHERE evidence "
+            "lives, and verify with search/search-doc before relying on "
+            "details:\n" + digests_text)
     if prior_draft:
         parts.append(
             "A prior draft of this report exists. Revise it - keep what is "
@@ -45,9 +52,35 @@ def load_report_md() -> str:
     return _REPORT_MD.read_text(encoding="utf-8")
 
 
+MINING_MD = """You are mining one document for a report. You will receive a
+part of the document's extracted text and the report's section list. Reply
+with compact findings: concrete facts from THIS text that serve any listed
+section, each on its own line, tagged with the section it serves and quoting
+the key phrase. Do not summarize the document; extract only what the sections
+need. If nothing in this text is relevant to any section, reply with exactly:
+NOTHING RELEVANT"""
+
+
+def compose_mining_prompt(goal: str, sections, doc_id: int, filename: str,
+                          part_text: str, part_no: int, parts_total: int) -> str:
+    """User prompt for one mining call: one slice of one document, plus the
+    report's section list so the model knows what to extract for. Paired
+    with MINING_MD as the system prompt (a plain complete() call, no tools -
+    mining reads text it was already handed, it does not retrieve)."""
+    sec_lines = "\n".join(f"- {s.title or s.key}: {s.instruction}"
+                          for s in sections)
+    return (
+        f"Report goal: {goal}\n\n"
+        f"Sections to serve:\n{sec_lines}\n\n"
+        f"Document to mine: document {doc_id} ({filename}), "
+        f"part {part_no} of {parts_total}.\n\n"
+        f"--- Document text ---\n{part_text}\n--- End document text ---")
+
+
 def compose_section_prompt(goal: str, section: Section, *, corpus: str,
                            guidance: str | None = None,
-                           prior_content: str | None = None) -> str:
+                           prior_content: str | None = None,
+                           digests_text: str | None = None) -> str:
     """User prompt for one report work unit. Mirrors compose_prompt's rerun
     design: the prior SECTION content (not the whole report - the unit's
     context budget is per section) rides in the prompt, and user guidance is
@@ -59,6 +92,12 @@ def compose_section_prompt(goal: str, section: Section, *, corpus: str,
         f"Work ONLY within corpus {corpus!r}: pass it as the corpus argument "
         "to every search, and draw evidence only from documents in it.",
     ]
+    if digests_text:
+        parts.append(
+            "Evidence digests from an exhaustive read of the corpus (mined "
+            "mechanically, doc by doc). Use them to know WHERE evidence "
+            "lives, and verify with search/search-doc before relying on "
+            "details:\n" + digests_text)
     if prior_content:
         parts.append(
             "A prior version of this section exists. Revise it - keep what "

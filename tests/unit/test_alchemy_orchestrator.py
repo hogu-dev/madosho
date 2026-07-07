@@ -619,3 +619,139 @@ def test_full_coverage_living_research_revises_draft():
     assert result.markdown == "revised draft body"
     assert result.ledger["consulted"]["2"] == "forced"
     assert result.ledger["complete"] is True
+
+
+# --- Stage C task 6: exhaustive coverage - system-side reads + mining -------
+
+class ExhaustiveTools(LedgerFakeTools):
+    """get-doc serves whole-text reads for the mining phase."""
+    def invoke(self, name, args):
+        self.calls.append((name, args))
+        if name == "list-documents":
+            return ToolResult(ok=True, data={"corpus": args.get("corpus"),
+                                             "documents": list(self.docs)})
+        if name == "get-doc":
+            return ToolResult(ok=True, data={
+                "document_id": args["document_id"], "pipeline": "p",
+                "pipeline_id": 2, "char_count": 9,
+                "text": f"text of doc {args['document_id']}"})
+        return FakeTools().invoke(name, args)
+
+
+def test_exhaustive_mines_every_doc_then_writes():
+    llm = ScriptedLlm([
+        AssistantTurn(text="doc1 fact for One", usage=None),   # mine doc 1
+        AssistantTurn(text="NOTHING RELEVANT", usage=None),    # mine doc 2
+        AssistantTurn(text="body\nCONFIDENCE: high", usage=None),  # section
+    ])
+    tools = ExhaustiveTools()
+    result = alchemy.run_goal("report", {"template": _one_section_template()},
+                              corpus="c", tools=tools, llm=llm,
+                              coverage="exhaustive")
+    assert result.ledger["consulted"] == {"1": "read", "2": "read"}
+    assert result.ledger["complete"] is True
+    assert [c for c in tools.calls if c[0] == "get-doc"] == [
+        ("get-doc", {"document_id": 1}), ("get-doc", {"document_id": 2})]
+    # reads are attributed like the loop's get-doc citations
+    assert any(c.document_id == 1 and "whole text" in c.citation
+               for c in result.citations)
+    assert result.sections[0].content == "body"
+
+
+def test_exhaustive_digests_reach_the_section_prompt():
+    seen = {}
+
+    class SpyLlm:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools):
+            self.n += 1
+            if self.n <= 2:
+                return AssistantTurn(text=f"fact {self.n}", usage=None)
+            seen["user"] = [m for m in messages if m["role"] == "user"][0]["content"]
+            return AssistantTurn(text="body\nCONFIDENCE: high", usage=None)
+
+    alchemy.run_goal("report", {"template": _one_section_template()},
+                     corpus="c", tools=ExhaustiveTools(), llm=SpyLlm(),
+                     coverage="exhaustive")
+    assert "fact 1" in seen["user"] and "fact 2" in seen["user"]
+
+
+def test_exhaustive_reserves_write_budget():
+    # cap = 3 with 1 section: reserve = 2, so mining may spend only 1 call.
+    # Doc 1 gets mined; doc 2 must be left honestly unread, and the section
+    # unit still runs inside its reserve.
+    llm = ScriptedLlm([
+        AssistantTurn(text="doc1 fact", usage=None),            # mine doc 1
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="1", name="search",
+                     arguments={"corpus": "c", "query": "q"})], usage=None),
+        AssistantTurn(text="body\nCONFIDENCE: high", usage=None),
+    ])
+    result = alchemy.run_goal("report", {"template": _one_section_template()},
+                              corpus="c", tools=ExhaustiveTools(), llm=llm,
+                              coverage="exhaustive", max_llm_calls=3)
+    assert result.usage.llm_calls == 3
+    assert result.ledger["consulted"]["1"] == "read"
+    assert result.ledger["consulted"].get("2") != "read"
+    assert result.ledger["complete"] is False
+    assert "llm call cap" in result.ledger["shortfall"]
+    assert result.sections[0].filled is True
+
+
+def test_exhaustive_get_doc_failure_is_honest():
+    class FailingRead(ExhaustiveTools):
+        def invoke(self, name, args):
+            if name == "get-doc" and args["document_id"] == 2:
+                self.calls.append((name, args))
+                return ToolResult(ok=False, error="no pipeline")
+            return super().invoke(name, args)
+
+    llm = ScriptedLlm([
+        AssistantTurn(text="doc1 fact", usage=None),
+        AssistantTurn(text="body\nCONFIDENCE: high", usage=None),
+    ])
+    result = alchemy.run_goal("report", {"template": _one_section_template()},
+                              corpus="c", tools=FailingRead(), llm=llm,
+                              coverage="exhaustive")
+    assert result.ledger["failures"]["2"].startswith("no pipeline")
+    assert result.ledger["complete"] is False
+    assert result.sections[0].confidence["level"] == "medium"
+
+
+def test_exhaustive_union_skips_docs_already_read():
+    llm = ScriptedLlm([
+        AssistantTurn(text="doc2 fact", usage=None),            # only doc 2
+        AssistantTurn(text="body\nCONFIDENCE: high", usage=None),
+    ])
+    tools = ExhaustiveTools()
+    result = alchemy.run_goal("report", {"template": _one_section_template()},
+                              corpus="c", tools=tools, llm=llm,
+                              coverage="exhaustive",
+                              prior_ledger={"consulted": {"1": "read"}})
+    reads = [c for c in tools.calls if c[0] == "get-doc"]
+    assert reads == [("get-doc", {"document_id": 2})]
+    assert result.ledger["complete"] is True
+
+
+def test_exhaustive_living_research_mines_then_writes():
+    seen = {}
+
+    class SpyLlm:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools):
+            self.n += 1
+            if self.n <= 2:
+                return AssistantTurn(text=f"fact {self.n}", usage=None)
+            seen["user"] = [m for m in messages if m["role"] == "user"][0]["content"]
+            return AssistantTurn(text="the answer", usage=None)
+
+    result = alchemy.run_goal("living-research", {"goal": "g"}, corpus="c",
+                              tools=ExhaustiveTools(), llm=SpyLlm(),
+                              coverage="exhaustive")
+    assert result.markdown == "the answer"
+    assert "fact 1" in seen["user"]
+    assert result.ledger["complete"] is True

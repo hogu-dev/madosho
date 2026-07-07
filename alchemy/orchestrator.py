@@ -41,13 +41,15 @@ from __future__ import annotations
 from dataclasses import replace
 
 import research_agent
+from research_agent.types import Citation
 
 from .compile import compile_spec
 from .confidence import blend_confidence, split_grade_marker
 from .ledger import (COVERAGE_MODES, CoverageLedger, citations_from_hits,
                      list_corpus_docs)
 from .llm import CallCapExceeded, CountingLlm
-from .prompts import (compose_coverage_query, compose_forced_revision_prompt,
+from .prompts import (MINING_MD, compose_coverage_query,
+                      compose_forced_revision_prompt, compose_mining_prompt,
                       compose_prompt, compose_section_prompt, load_report_md)
 from .render import render_report
 from .types import GoalRunResult, SectionResult
@@ -58,6 +60,9 @@ _WEAK_SECTION_CAP = 3      # revision targets per forced pass; more dilutes
                            # the query and multiplies revision calls
 _EVIDENCE_CHAR_CAP = 8000  # evidence text per revision prompt; a one-turn
                            # revision must fit small models comfortably
+_DIGEST_CHAR_CAP = 1500       # per-doc digest cap: digests must stay compact
+                              # enough that ALL of them fit a section prompt
+_DIGEST_BLOCK_CAP = 24_000    # total digest block injected per prompt
 
 
 def _weak_sections(results: list, cap: int = _WEAK_SECTION_CAP) -> list:
@@ -143,6 +148,95 @@ def _forced_pass(ledger, weak: list, *, goal: str, tools, counting,
     return new_citations, None
 
 
+def _digests_block(digests: dict[int, str], corpus_docs: dict | None) -> str:
+    """Join per-doc digests into the prompt block, capped so a big corpus
+    cannot blow the unit's context. Truncation is stated inline - a unit
+    told 'these are all the digests' when they are not would trust a lie."""
+    parts, used = [], 0
+    for doc_id in sorted(digests):
+        text = digests[doc_id].strip()
+        if not text:
+            continue
+        name = (corpus_docs or {}).get(doc_id) or ""
+        entry = f"[doc {doc_id} {name}] {text}".strip()
+        if used + len(entry) > _DIGEST_BLOCK_CAP:
+            parts.append("(further digests omitted: prompt budget)")
+            break
+        parts.append(entry)
+        used += len(entry)
+    return "\n".join(parts)
+
+
+def _mine_corpus(ledger, sections, *, goal: str, tools, counting, budget,
+                 reserve_calls: int, max_llm_calls, should_cancel,
+                 on_progress):
+    """Enforce `exhaustive` coverage: read every not-yet-read doc SYSTEM-side
+    (get-doc; the model cannot skip a doc) and mine each slice with one
+    metered call. Slices are budget-sized so small-window models survive
+    whole documents without stage-D handoffs (fixed slicing, not model-driven
+    state). reserve_calls keeps mining from starving the write phase: mining
+    stops - honestly - while the section units can still afford their floor.
+
+    Returns (digests, citations); mutates the ledger in place."""
+    digests: dict[int, str] = {}
+    citations: list = []
+    docs = ledger.corpus_docs
+    if docs is None:
+        ledger.shortfall = "could not list corpus documents"
+        return digests, citations
+    slice_chars = max(4000, budget.max_context_chars // 2)
+    todo = [d for d in sorted(docs) if ledger.consulted.get(d) != "read"]
+    for i, doc_id in enumerate(todo):
+        if should_cancel is not None and should_cancel():
+            ledger.shortfall = "cancelled"
+            return digests, citations
+        if on_progress is not None:
+            on_progress({"phase": "mining", "docs_done": i,
+                         "docs_total": len(todo)})
+        res = tools.invoke("get-doc", {"document_id": doc_id})
+        if not getattr(res, "ok", False) or not isinstance(res.data, dict):
+            ledger.failures[doc_id] = (getattr(res, "error", None)
+                                       or "get-doc failed")[:200]
+            continue
+        text = res.data.get("text") or ""
+        citations.append(Citation(
+            document_id=doc_id, pipeline_id=res.data.get("pipeline_id"),
+            pipeline=res.data.get("pipeline"), position=None,
+            citation=f"document {doc_id} (whole text)", source=None,
+            score=None, quote=text[:500]))
+        slices = [text[j:j + slice_chars]
+                  for j in range(0, len(text), slice_chars)] or [""]
+        findings: list[str] = []
+        capped = False
+        for part_no, part in enumerate(slices, 1):
+            if max_llm_calls is not None and \
+                    max_llm_calls - counting.usage.llm_calls <= reserve_calls:
+                ledger.shortfall = "llm call cap"
+                capped = True
+                break
+            try:
+                turn = counting.complete(
+                    [{"role": "system", "content": MINING_MD},
+                     {"role": "user", "content": compose_mining_prompt(
+                         goal, sections, doc_id, docs.get(doc_id, ""),
+                         part, part_no, len(slices))}], [])
+            except CallCapExceeded:
+                ledger.shortfall = "llm call cap"
+                capped = True
+                break
+            reply = (turn.text or "").strip()
+            if reply and reply.upper() != "NOTHING RELEVANT":
+                findings.append(reply)
+        if capped and not findings:
+            # nothing mined: the read did not happen in any honest sense
+            return digests, citations
+        digests[doc_id] = "\n".join(findings)[:_DIGEST_CHAR_CAP]
+        ledger.mark(doc_id, "read")
+        if capped:
+            return digests, citations
+    return digests, citations
+
+
 def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
              budget=None, coverage: str = "search",
              guidance: str | None = None,
@@ -172,17 +266,32 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
                            max_llm_calls=max_llm_calls,
                            should_cancel=should_cancel,
                            on_progress=on_progress)
-    # living-research: the stage-A single-unit path, unchanged
+    # living-research: the stage-A single-unit path, deepened by coverage
+    digests_text = None
+    extra_citations: list = []
+    if coverage == "exhaustive":
+        budget = budget if budget is not None else research_agent.RunBudget()
+        digests, mined_cits = _mine_corpus(
+            ledger, compiled.sections, goal=compiled.goal, tools=tools,
+            counting=counting, budget=budget,
+            reserve_calls=(_MIN_UNIT_CALLS if max_llm_calls is not None else 0),
+            max_llm_calls=max_llm_calls, should_cancel=should_cancel,
+            on_progress=on_progress)
+        extra_citations.extend(mined_cits)
+        digests_text = _digests_block(digests, ledger.corpus_docs) or None
     prompt = compose_prompt(compiled, corpus=corpus, guidance=guidance,
-                            prior_draft=prior_draft)
+                            prior_draft=prior_draft, digests_text=digests_text)
     if max_llm_calls is not None:
         budget = budget if budget is not None else research_agent.RunBudget()
+        # REMAINING allowance, not max_llm_calls-1: mining already spent some
+        remaining = max(0, max_llm_calls - counting.usage.llm_calls)
         budget = replace(budget, max_rounds=min(budget.max_rounds,
-                                                max(0, max_llm_calls - 1)))
+                                                max(0, remaining - 1)))
     report = research_agent.run(prompt, tools=tools, llm=counting,
                                 budget=budget, should_cancel=should_cancel)
     ledger.mark_citations(report.citations, "search")
-    markdown, stop, citations = report.markdown, report.stop_reason, list(report.citations)
+    markdown, stop, citations = (report.markdown, report.stop_reason,
+                                 extra_citations + list(report.citations))
     if coverage == "full" and stop not in ("cancelled",):
         # the whole draft is the one weak "section": revise it once with any
         # forced evidence, so living-research gets the same guarantee
@@ -273,6 +382,22 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
     # forced synthesis under a quota - is not a truncation to report)
     round_cap_empty = False
 
+    digests_text = None
+    mined_cits: list = []   # folded into every section's confidence blend
+                            # below - a section that relied on injected
+                            # digests (no tool call of its own) must still
+                            # get credit for the docs the mining phase read
+    if coverage == "exhaustive":
+        reserve = (_MIN_UNIT_CALLS * len(compiled.sections)
+                   if max_llm_calls is not None else 0)
+        digests, mined_cits = _mine_corpus(
+            ledger, compiled.sections, goal=compiled.goal, tools=tools,
+            counting=counting, budget=budget, reserve_calls=reserve,
+            max_llm_calls=max_llm_calls, should_cancel=should_cancel,
+            on_progress=on_progress)
+        citations.extend(mined_cits)
+        digests_text = _digests_block(digests, ledger.corpus_docs) or None
+
     for i, (section, res) in enumerate(zip(compiled.sections, results)):
         if halted is None and should_cancel is not None and should_cancel():
             halted = "cancelled"
@@ -302,7 +427,8 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
         prior = prior_by_key.get(section.key)
         prompt = compose_section_prompt(
             compiled.goal, section, corpus=corpus, guidance=guidance,
-            prior_content=(prior or {}).get("content"))
+            prior_content=(prior or {}).get("content"),
+            digests_text=digests_text)
         calls_before = counting.usage.llm_calls
         try:
             unit = research_agent.run(prompt, tools=tools, llm=counting,
@@ -340,7 +466,11 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
             _carry_prior(res, prior, _SHORTFALL["cancelled"])
             continue
         content, grade = split_grade_marker(unit.markdown or "")
-        res.confidence = blend_confidence(grade, unit.citations)
+        # exhaustive mode's digests rode in the prompt as TEXT, not tool
+        # calls, so unit.citations alone would blind the blend to whatever
+        # the mining phase already read; mined_cits is [] outside exhaustive
+        # mode, so this is a no-op there (identical to stage-B behavior)
+        res.confidence = blend_confidence(grade, unit.citations + mined_cits)
         citations.extend(unit.citations)
         ledger.mark_citations(unit.citations, "search")
         if content.strip():

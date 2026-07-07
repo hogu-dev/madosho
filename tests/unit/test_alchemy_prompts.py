@@ -1,5 +1,6 @@
 from alchemy.compile import compile_spec
 from alchemy.prompts import compose_prompt
+from alchemy.types import CompiledGoal
 
 
 def _compiled():
@@ -95,3 +96,35 @@ def test_forced_revision_prompt_carries_evidence_and_current_text():
     assert "quote one" in p and "quote two" in p
     assert "CONFIDENCE:" in p          # revision must re-grade itself
     assert "unchanged" in p.lower()    # explicit permission to keep the text
+
+
+# --- Stage C task 6: mining prompt + digests block ---------------------------
+
+from alchemy.prompts import MINING_MD, compose_mining_prompt
+
+
+def test_mining_prompt_names_doc_sections_and_part():
+    secs = [Section(key="one", instruction="find X", title="One")]
+    p = compose_mining_prompt("goal", secs, 7, "a.pdf", "the text", 2, 3)
+    assert "document 7" in p and "a.pdf" in p
+    assert "part 2 of 3" in p
+    assert "One" in p and "find X" in p
+    assert "the text" in p
+    assert "NOTHING RELEVANT" in MINING_MD
+
+
+def test_section_prompt_carries_digests_block():
+    sec = Section(key="one", instruction="find X", title="One")
+    p = compose_section_prompt("goal", sec, corpus="c",
+                               digests_text="[doc 7 a.pdf] facts")
+    assert "[doc 7 a.pdf] facts" in p
+    # and absent when None (stage-B call sites unchanged)
+    p2 = compose_section_prompt("goal", sec, corpus="c")
+    assert "digest" not in p2.lower()
+
+
+def test_goal_prompt_carries_digests_block():
+    compiled = CompiledGoal(goal="g", sections=[Section(key="body",
+                                                        instruction="g")])
+    p = compose_prompt(compiled, corpus="c", digests_text="[doc 7] facts")
+    assert "[doc 7] facts" in p
