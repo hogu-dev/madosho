@@ -420,3 +420,41 @@ def test_status_without_sections_unchanged(fake_http, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "find_vuln v1: running" in out
+
+
+def test_alchemy_run_passes_coverage_and_fresh_flag(fake_http):
+    fh = fake_http({
+        "/alchemy/goals/find_vuln/runs": _run(version=1, status="pending"),
+    })
+    cli_main.main(["alchemy", "run", "find_vuln", "--provider", "openai",
+                   "--model", "m", "--coverage", "exhaustive",
+                   "--fresh-coverage", "--no-wait", "--json"])
+    _, url, body = fh.calls[-1]
+    assert url.endswith("/alchemy/goals/find_vuln/runs")
+    assert body["coverage"] == "exhaustive"
+    assert body["fresh_coverage"] is True
+
+
+def test_alchemy_create_accepts_full_coverage(fake_http):
+    fh = fake_http({
+        "/corpora": [{"id": 3, "name": "secdocs", "config": {}}],
+        "/alchemy/goals": _goal(coverage="full"),
+    })
+    cli_main.main(["alchemy", "create", "find_vuln", "--corpus", "secdocs",
+                   "--goal", "map vulns", "--coverage", "full", "--json"])
+    _, url, body = fh.calls[-1]
+    assert url.endswith("/alchemy/goals")
+    assert body["coverage"] == "full"
+
+
+def test_alchemy_status_prints_coverage_summary(fake_http, capsys):
+    fake_http({
+        "/alchemy/goals/find_vuln/runs/1": _run(
+            version=1, status="done", progress={"phase": "done"},
+            sections=[], usage={"llm_calls": 3},
+            ledger={"summary": "coverage full: consulted 2/2 docs"}),
+    })
+    rc = cli_main.main(["alchemy", "status", "find_vuln", "--run", "1"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "coverage full: consulted 2/2 docs" in out

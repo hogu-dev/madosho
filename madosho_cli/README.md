@@ -115,10 +115,10 @@ Standing, named goals that run autonomously over a corpus and produce
 versioned, exportable drafts. CLI-only in this release (not on MCP/toolserver).
 
 ```
-madosho-cli alchemy create <name> --corpus NAME --goal TEXT [--coverage search] [--json]
-madosho-cli alchemy run <ref> --provider P --model M [--coverage search]
-            [--guidance TEXT] [--based-on VERSION] [--max-llm-calls N]
-            [--no-wait] [--json]
+madosho-cli alchemy create <name> --corpus NAME --goal TEXT [--coverage search|full|exhaustive] [--json]
+madosho-cli alchemy run <ref> --provider P --model M [--coverage search|full|exhaustive]
+            [--fresh-coverage] [--guidance TEXT] [--based-on VERSION]
+            [--max-llm-calls N] [--no-wait] [--json]
 madosho-cli alchemy status <ref> [--run VERSION] [--json]
 madosho-cli alchemy export <ref> [--run VERSION] [-o FILE]
 madosho-cli alchemy finalize <ref> --run VERSION [--json]
@@ -137,6 +137,22 @@ madosho-cli alchemy cancel <run_id> [--json]
 - `export`/`status` default `--run` to the goal's latest run if omitted.
 - `finalize` marks one version as the goal's canonical output (clears any
   prior final version on that goal).
+
+Coverage is what the run GUARANTEES it did with the corpus before writing,
+enforced mechanically and reported honestly in `alchemy status`:
+
+- `search` (default) - the agent searches as it sees fit; the status reports
+  how many documents were actually consulted, e.g. "consulted 6 of 14 docs".
+- `full` - every document is consulted at least once: any document the
+  agent's own searches missed gets a forced retrieval pass, and its evidence
+  is folded into the weakest sections.
+- `exhaustive` - every document is read whole (in slices) and mined against
+  the report's sections before writing; retrieval only supplements.
+
+Reruns inherit the revision chain's coverage: a v2 does not re-consult
+documents v1 already covered unless you pass `--fresh-coverage`. If a cap
+stops coverage early the status says so, e.g.
+"coverage full: consulted 11/14 docs (llm call cap)".
 
 Worked example:
 

@@ -287,7 +287,8 @@ def alchemy_create(name: str, corpus: str, spec: dict[str, Any],
 def alchemy_run(ref: str, provider: str, model: str, *, coverage: str | None = None,
                 guidance: str | None = None, based_on_version: int | None = None,
                 budget_chars: int = 100_000, max_rounds: int = 8,
-                max_llm_calls: int | None = None) -> dict[str, Any]:
+                max_llm_calls: int | None = None,
+                fresh_coverage: bool = False) -> dict[str, Any]:
     payload: dict[str, Any] = {"llm": {"provider": provider, "model": model},
                                "budget_chars": budget_chars, "max_rounds": max_rounds}
     if coverage:
@@ -298,6 +299,7 @@ def alchemy_run(ref: str, provider: str, model: str, *, coverage: str | None = N
         payload["based_on_version"] = based_on_version
     if max_llm_calls is not None:
         payload["max_llm_calls"] = max_llm_calls
+    payload["fresh_coverage"] = fresh_coverage
     return http.post_json(
         f"{http.control_base()}/alchemy/goals/{ref}/runs", payload)
 

@@ -169,7 +169,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the goal statement (living-research)")
     p.add_argument("--spec", dest="spec_path", default=None,
                    help="markdown template file (report)")
-    p.add_argument("--coverage", default="search", choices=["search"])
+    p.add_argument("--coverage", default="search",
+                   choices=["search", "full", "exhaustive"])
     _add_json(p)
     p.set_defaults(func=commands.cmd_alchemy_create)
 
@@ -177,7 +178,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("ref", help="goal name or id")
     p.add_argument("--provider", required=True)
     p.add_argument("--model", required=True)
-    p.add_argument("--coverage", default=None, choices=["search"])
+    p.add_argument("--coverage", default=None,
+                   choices=["search", "full", "exhaustive"])
+    p.add_argument("--fresh-coverage", action="store_true",
+                   help="re-consult the corpus from scratch instead of "
+                        "inheriting coverage from the run this revises")
     p.add_argument("--guidance", default=None)
     p.add_argument("--based-on", dest="based_on", type=int, default=None,
                    help="version to revise (default: latest with a draft)")

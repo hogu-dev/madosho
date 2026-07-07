@@ -305,7 +305,8 @@ def cmd_alchemy_run(args: argparse.Namespace) -> int:
     data = core.alchemy_run(args.ref, args.provider, args.model,
                             coverage=args.coverage, guidance=args.guidance,
                             based_on_version=args.based_on,
-                            max_llm_calls=args.max_llm_calls)
+                            max_llm_calls=args.max_llm_calls,
+                            fresh_coverage=args.fresh_coverage)
     version = data["version"]
     if args.no_wait:
         _emit_or_print(args, data, lambda d: f"started {args.ref} v{d['version']} (pending)")
@@ -335,6 +336,9 @@ def cmd_alchemy_status(args: argparse.Namespace) -> int:
             if not s.get("filled"):
                 line += f"  not filled: {s.get('note') or '-'}"
             lines.append(line)
+        summary = (d.get("ledger") or {}).get("summary")
+        if summary:
+            lines.append(f"  coverage: {summary}")
         return "\n".join(lines)
 
     _emit_or_print(args, data, _fmt)
