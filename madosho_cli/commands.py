@@ -271,6 +271,13 @@ def cmd_list_runs(args: argparse.Namespace) -> int:
 
 def cmd_alchemy_create(args: argparse.Namespace) -> int:
     if args.goal_type == "report":
+        # reject --goal here rather than silently dropping it: a report's goal
+        # statement comes from the template's title+preamble, so a --goal flag
+        # signals the user misunderstands which knob does what
+        if args.goal:
+            raise http.CliError(
+                "--goal is not used with --type report; the report's goal "
+                "statement is the template's title and intro prose")
         if not args.spec_path:
             raise http.CliError("--spec TEMPLATE.md is required for --type report")
         try:
@@ -280,6 +287,10 @@ def cmd_alchemy_create(args: argparse.Namespace) -> int:
             raise http.CliError(f"cannot read spec file: {e}")
         spec = {"template": template}
     else:
+        # --spec is a report-only flag; flag it instead of ignoring it
+        if args.spec_path:
+            raise http.CliError(
+                "--spec is only for --type report; living-research takes --goal")
         if not args.goal:
             raise http.CliError("--goal is required for --type living-research")
         spec = {"goal": args.goal}

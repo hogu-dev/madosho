@@ -236,6 +236,37 @@ def test_execute_progress_callback_writes_row(tmp_path):
         assert s.get(db.AlchemyRun, rid).status == "done"
 
 
+def test_execute_maps_failed_stop_reason_to_failed_status(tmp_path):
+    """A report run whose engine caught a unit crash returns stop_reason
+    'failed' with partial sections landed; the adapter must persist those
+    sections, mark the run failed, and surface the failing section's note."""
+    rid = _seed(tmp_path)
+
+    class FailedResult(FakeResult):
+        def __init__(self):
+            super().__init__()
+            self.stop_reason = "failed"
+            self.sections = [
+                {"key": "a", "title": "A", "content": "landed", "filled": True,
+                 "note": "", "confidence": {"level": "medium"},
+                 "stop_reason": "final", "llm_calls": 2},
+                {"key": "b", "title": "B", "content": "", "filled": False,
+                 "note": "unit failed: RuntimeError: boom",
+                 "confidence": {"level": "low"}, "stop_reason": "", "llm_calls": 0}]
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(
+            s, rid, Settings.from_env(),
+            run_goal_fn=lambda *a, **kw: FailedResult())
+        run = s.get(db.AlchemyRun, rid)
+        assert run.status == "failed"
+        assert run.error == "unit failed: RuntimeError: boom"
+        # the partial result is kept, not discarded
+        assert run.draft_markdown == "# Draft\nbody"
+        assert [sec["key"] for sec in run.sections] == ["a", "b"]
+        assert run.sections[0]["filled"] is True
+
+
 def test_dataclass_sections_serialized(tmp_path):
     rid = _seed(tmp_path)
     from alchemy.types import SectionResult

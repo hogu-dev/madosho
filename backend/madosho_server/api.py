@@ -1996,23 +1996,18 @@ def cancel_research(run_id: int, session: SessionDep):
 def create_alchemy_goal(body: AlchemyGoalCreate, session: SessionDep):
     if session.get(db.Corpus, body.corpus_id) is None:
         raise HTTPException(status_code=404, detail="corpus not found")
-    if body.goal_type not in ("living-research", "report"):
-        raise HTTPException(
-            status_code=400,
-            detail="goal_type must be 'living-research' or 'report'")
-    if body.goal_type == "living-research":
-        goal_val = (body.spec or {}).get("goal", "")
-        if not isinstance(goal_val, str) or not goal_val.strip():
-            raise HTTPException(status_code=400, detail="spec.goal is required")
-    else:
-        # fail-fast: an uncompilable template should 400 at create time, not
-        # fail a run later. Lazy import keeps api module import light; the
-        # server importing alchemy is the allowed dependency direction.
-        from alchemy.compile import compile_spec
-        try:
-            compile_spec("report", body.spec or {})
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+    # fail-fast: delegate ALL goal-type/spec validation to the compiler, the
+    # single source of truth for what a spec must contain. An uncompilable
+    # spec (bad type, missing goal, missing/headingless template) should 400
+    # at create time, not fail a run later. WHY delegate: new goal types (stage
+    # D) then need zero API edits - the compiler grows a branch, the endpoint
+    # does not. Lazy import keeps api module import light; the server importing
+    # alchemy is the allowed dependency direction.
+    from alchemy.compile import compile_spec
+    try:
+        compile_spec(body.goal_type, body.spec or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     # name-only lookup: _resolve_goal's id-then-name resolution would spuriously
     # match an unrelated goal by id when body.name happens to be all digits
     existing = session.scalars(select(db.AlchemyGoal)
@@ -2068,17 +2063,24 @@ def start_alchemy_run(ref: str, body: AlchemyRunLaunch, session: SessionDep,
     version = (last.version + 1) if last else 1
     prior_draft_version = body.based_on_version
     if prior_draft_version is None:
-        # default: revise the highest-version run of this goal that actually
-        # has a draft, not just the newest run overall (a later run may have
-        # failed before producing one)
-        draft_run = session.scalars(
+        # default: revise the highest-version run whose draft is worth
+        # revising. A non-empty draft is NOT enough: a report draft is ALWAYS
+        # non-empty (it renders a placeholder skeleton even when every section
+        # was starved), so a cancelled/capped zero-filled v2 would otherwise
+        # shadow a fully-filled v1. A run qualifies when its draft is non-empty
+        # AND (it has no per-section data -> living-research, OR at least one
+        # section actually filled).
+        candidates = session.scalars(
             select(db.AlchemyRun)
             .where(db.AlchemyRun.goal_id == g.id,
                    db.AlchemyRun.draft_markdown.isnot(None),
                    db.AlchemyRun.draft_markdown != "")
-            .order_by(db.AlchemyRun.version.desc())).first()
-        if draft_run is not None:
-            prior_draft_version = draft_run.version
+            .order_by(db.AlchemyRun.version.desc())).all()
+        for cand in candidates:
+            secs = cand.sections
+            if not secs or any(s.get("filled") for s in secs):
+                prior_draft_version = cand.version
+                break
     run = db.AlchemyRun(
         goal_id=g.id, version=version, status="pending",
         coverage=body.coverage or g.coverage, guidance=body.guidance,

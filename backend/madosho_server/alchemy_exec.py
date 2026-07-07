@@ -162,6 +162,17 @@ def execute_alchemy_run(session, alchemy_run_id: int, settings,
         session.flush()  # persist before the cancel re-read
         if _is_alchemy_cancelled(session, alchemy_run_id):
             return _finish(session, run, "cancelled")
+        if result.stop_reason == "failed":
+            # a report unit crashed: the engine already caught it and landed
+            # every section that survived (draft/citations/sections/usage are
+            # persisted above), so we keep the partial result but flag the run
+            # failed and surface the first failing section's note as the error.
+            # Mirrors how "cancelled" maps below - the living-research path
+            # never returns "failed" (its exceptions propagate to the handler).
+            note = next((s.get("note") for s in (run.sections or [])
+                         if (s.get("note") or "").startswith("unit failed:")),
+                        None)
+            return _finish(session, run, "failed", error=note)
         _finish(session, run, "done")
     except Exception as e:
         logger.exception("alchemy run %s failed", alchemy_run_id)

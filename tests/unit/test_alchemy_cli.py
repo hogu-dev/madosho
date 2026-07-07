@@ -365,6 +365,30 @@ def test_create_living_research_requires_goal(fake_http, capsys):
     assert "--goal" in capsys.readouterr().err
 
 
+def test_create_report_with_goal_conflicts(fake_http, tmp_path, capsys):
+    # --goal is meaningless for a report (its goal is the template preamble);
+    # the CLI rejects the combination instead of silently dropping --goal
+    spec_file = tmp_path / "t.md"
+    spec_file.write_text("# R\n\n## S\n\nx.\n", encoding="utf-8")
+    fake_http({})
+    rc = cli_main.main(["alchemy", "create", "r", "--corpus", "c",
+                        "--type", "report", "--spec", str(spec_file),
+                        "--goal", "stray goal"])
+    assert rc != 0
+    assert "--goal" in capsys.readouterr().err
+
+
+def test_create_living_research_with_spec_conflicts(fake_http, tmp_path, capsys):
+    # --spec is report-only; living-research must reject it, not ignore it
+    spec_file = tmp_path / "t.md"
+    spec_file.write_text("# R\n\n## S\n\nx.\n", encoding="utf-8")
+    fake_http({})
+    rc = cli_main.main(["alchemy", "create", "r", "--corpus", "c",
+                        "--goal", "map vulns", "--spec", str(spec_file)])
+    assert rc != 0
+    assert "--spec" in capsys.readouterr().err
+
+
 def test_status_renders_section_table(fake_http, capsys):
     run = _run(status="done", version=2, progress={"phase": "done"})
     run["sections"] = [

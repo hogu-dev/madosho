@@ -217,6 +217,36 @@ def test_run_default_based_on_version_skips_draftless_later_run(tmp_path):
     assert r3.json()["based_on_version"] == 1
 
 
+def test_run_default_based_on_skips_all_unfilled_report_run(tmp_path):
+    """A report draft is always non-empty (placeholder skeleton), so a later
+    zero-filled run must NOT shadow an earlier fully-filled one: the default
+    based_on lands on the version with at least one filled section."""
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid, goal_type="report",
+                 spec={"template": REPORT_TEMPLATE})
+    r1 = client.post("/alchemy/goals/find_vuln/runs",
+                     json={"llm": {"provider": "openai", "model": "m"}})
+    r2 = client.post("/alchemy/goals/find_vuln/runs",
+                     json={"llm": {"provider": "openai", "model": "m"}})
+    with db.SessionLocal() as s:
+        run1 = s.get(db.AlchemyRun, r1.json()["id"])
+        run1.status = "done"
+        run1.draft_markdown = "# R\n\n## Summary\n\nreal content\n"
+        run1.sections = [{"key": "summary", "filled": True, "content": "x"},
+                         {"key": "detail", "filled": False, "content": ""}]
+        run2 = s.get(db.AlchemyRun, r2.json()["id"])
+        run2.status = "done"
+        run2.draft_markdown = "# R\n\n## Summary\n\n_(not filled: cancelled)_\n"
+        run2.sections = [{"key": "summary", "filled": False, "content": ""},
+                         {"key": "detail", "filled": False, "content": ""}]
+        s.commit()
+    r3 = client.post("/alchemy/goals/find_vuln/runs",
+                     json={"llm": {"provider": "openai", "model": "m"}})
+    assert r3.status_code == 201, r3.text
+    assert r3.json()["based_on_version"] == 1
+
+
 def test_list_alchemy_goals(tmp_path):
     client, _ = _client(tmp_path)
     cid = _corpus(client)
