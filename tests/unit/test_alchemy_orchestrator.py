@@ -268,3 +268,153 @@ def test_living_research_unchanged_no_sections():
         tools=FakeTools(), llm=_search_then_final(), budget=RunBudget())
     assert result.sections == []
     assert result.markdown == "# Report\nfindings"
+
+
+# --- FIX A: carry prior sections forward when a rerun starves a section ------
+
+def _prior(summary="prior summary text", june="prior june text"):
+    return [{"key": "summary", "title": "Summary", "content": summary,
+             "filled": True, "confidence": {"level": "high", "distinct_docs": 3,
+                                            "citations": 5}},
+            {"key": "june-incidents", "title": "June incidents",
+             "content": june, "filled": True,
+             "confidence": {"level": "medium", "distinct_docs": 2,
+                            "citations": 2}}]
+
+
+def test_rerun_carries_prior_into_capped_section():
+    # cap=3, 2 sections: unit 1 runs within quota, unit 2 is starved (below the
+    # 2-call floor). With priors, the starved section carries the prior text
+    # instead of rendering a placeholder.
+    class Searcher:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, tools):
+            self.calls += 1
+            if tools:
+                return AssistantTurn(text=None, tool_calls=[
+                    ToolCall(id=str(self.calls), name="search",
+                             arguments={"corpus": "c", "query": "q"})])
+            return AssistantTurn(text="fresh summary\n\nCONFIDENCE: low")
+
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=FakeTools(),
+        llm=Searcher(), budget=RunBudget(), max_llm_calls=3,
+        prior_sections=_prior())
+    assert result.stop_reason == "call_cap"
+    june = result.sections[1]
+    assert june.filled
+    assert june.content == "prior june text"
+    assert "carried from prior" in june.note and "call cap" in june.note
+    # carried content shows in the assembled draft, no placeholder for it
+    assert "prior june text" in result.markdown
+    assert "_(not filled:" not in result.markdown
+    # carried confidence rides from the prior, not a fresh blend
+    assert june.confidence["level"] == "medium"
+
+
+def test_rerun_carries_prior_after_cancel_before_unit_2():
+    calls = {"n": 0}
+
+    def should_cancel():
+        calls["n"] += 1
+        return calls["n"] > 2   # let unit 1 run, cancel before unit 2
+
+    class OneShot:
+        def complete(self, messages, tools):
+            return AssistantTurn(text="fresh\n\nCONFIDENCE: high")
+
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=FakeTools(),
+        llm=OneShot(), should_cancel=should_cancel, prior_sections=_prior())
+    assert result.stop_reason == "cancelled"
+    assert result.sections[0].filled
+    june = result.sections[1]
+    assert june.filled and june.content == "prior june text"
+    assert "carried from prior" in june.note and "cancelled" in june.note
+
+
+def test_no_prior_still_renders_placeholder():
+    # same starvation as above but WITHOUT priors: the section stays unfilled
+    # and the draft carries the honest placeholder
+    class Searcher:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, tools):
+            self.calls += 1
+            if tools:
+                return AssistantTurn(text=None, tool_calls=[
+                    ToolCall(id=str(self.calls), name="search",
+                             arguments={"corpus": "c", "query": "q"})])
+            return AssistantTurn(text="fresh\n\nCONFIDENCE: low")
+
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=FakeTools(),
+        llm=Searcher(), budget=RunBudget(), max_llm_calls=3)
+    assert not result.sections[1].filled
+    assert "_(not filled:" in result.markdown
+
+
+# --- FIX B: a unit crash halts the run but keeps landed partials -------------
+
+class _FillThenCrash:
+    """Unit 1 answers on its first turn (fills section 1 in one call); the
+    NEXT unit's first turn raises, so section 2's research loop crashes."""
+    def __init__(self, boom="provider exploded"):
+        self.calls = 0
+        self.boom = boom
+
+    def complete(self, messages, tools):
+        self.calls += 1
+        if self.calls == 1:
+            return AssistantTurn(text="filled\n\nCONFIDENCE: high")
+        raise RuntimeError(self.boom)
+
+
+def test_unit_crash_halts_run_keeps_partials():
+    spec = {"template": ("## A\n\ndo a\n\n## B\n\ndo b\n\n## C\n\ndo c\n")}
+    result = alchemy.run_goal(
+        "report", spec, corpus="c", tools=FakeTools(), llm=_FillThenCrash(),
+        budget=RunBudget())
+    assert result.stop_reason == "failed"
+    assert result.sections[0].filled            # section A survived
+    assert not result.sections[1].filled
+    assert result.sections[1].note.startswith("unit failed: RuntimeError")
+    assert "provider exploded" in result.sections[1].note
+    assert not result.sections[2].filled        # C skipped after the halt
+    assert result.sections[2].note == "skipped: run failed"
+    # the crash is swallowed by the engine, never escapes to the caller
+
+
+def test_unit_crash_carries_prior_into_failed_section():
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=FakeTools(),
+        llm=_FillThenCrash(boom="boom"), budget=RunBudget(),
+        prior_sections=_prior())
+    assert result.stop_reason == "failed"
+    june = result.sections[1]
+    assert june.filled and june.content == "prior june text"
+    assert "carried from prior" in june.note and "unit failed" in june.note
+
+
+# --- FIX G: run-level round_cap only from units that produced nothing --------
+
+def test_round_cap_not_bubbled_when_every_section_filled():
+    # each unit fills via a forced synthesis under its quota (unit stop_reason
+    # round_cap) but the RUN cap is never tripped - a fully-filled run must
+    # read "final", not the misleading "round_cap".
+    class ForcedSynth:
+        def complete(self, messages, tools):
+            if tools:
+                return AssistantTurn(text=None, tool_calls=[
+                    ToolCall(id="x", name="search",
+                             arguments={"corpus": "c", "query": "q"})])
+            return AssistantTurn(text="filled\n\nCONFIDENCE: low")
+
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=FakeTools(),
+        llm=ForcedSynth(), budget=RunBudget(max_rounds=1))
+    assert all(s.filled for s in result.sections)
+    assert result.stop_reason == "final"

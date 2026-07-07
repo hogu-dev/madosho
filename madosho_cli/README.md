@@ -182,6 +182,14 @@ madosho-cli alchemy export vuln_report    # assembled markdown draft
 Each section runs as its own bounded work unit; `--max-llm-calls` caps the
 WHOLE run (units share the allowance). A capped run still lands a draft -
 unfilled sections say so in the export, and `stop_reason` reads `call_cap`.
+If a section's unit crashes, the run halts with `stop_reason` `failed` but
+every section that already landed is kept, and the run's `error` names the
+failing section. On a rerun (revising a prior version), any section that ends
+unfilled this time - starved by the cap, cancelled, crashed, or empty - falls
+back to the prior run's text for that section if it had any, noted as
+"carried from prior, not revised: ..."; a rerun can only improve a report,
+never regress a section it once filled.
+
 Per-section confidence is the model's self-grade capped by citation facts
 (a section citing one document never reads `high`), always reported with
 the numbers behind it.

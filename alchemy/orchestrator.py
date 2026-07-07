@@ -19,6 +19,14 @@ the run stops with stop reason "call_cap", a draft, and per-section
 shortfall notes. CountingLlm's own cap stays the backstop for the day the
 loop's call pattern changes.
 
+Partial survival is a hard guarantee: sections that already landed survive
+BOTH a call-cap trip (backstop or floor) AND a unit crash (a section's
+research loop raising). A crash sets the run's stop reason to "failed" and
+halts the remaining sections, but never discards what earlier units produced.
+On a rerun, a section that ends unfilled for ANY reason (cap, cancel, crash,
+empty) falls back to the prior run's content for that section if it had any -
+so a rerun can only improve a report, never regress a section it once filled.
+
 Stage C grows coverage enforcement here, behind the same run_goal signature
 - WHY the server adapter and CLI never change when the engine deepens.
 """
@@ -86,23 +94,62 @@ def _dedupe_citations(cits: list) -> list:
     return out
 
 
+# shortfall label per halt/empty reason, woven into the carry note so an
+# exported rerun says WHY a section was not revised this time
+_SHORTFALL = {"call_cap": "llm call cap", "cancelled": "cancelled",
+              "failed": "unit failed", "no_content": "no content produced"}
+
+
+def _skipped_note(halted: str) -> str:
+    """Note for a section skipped after the run already halted. "run failed"
+    reads more sensibly than the bare "failed" halt token."""
+    label = {"call_cap": "llm call cap", "cancelled": "cancelled",
+             "failed": "run failed"}.get(halted, halted)
+    return f"skipped: {label}"
+
+
+def _carry_prior(res: SectionResult, prior: dict | None, shortfall: str) -> None:
+    """A section ended unfilled this run; if the PRIOR run filled it, carry
+    that content forward rather than regressing to a placeholder. WHY: a rerun
+    exists to improve a report - starving one section (cap/cancel/crash/empty)
+    should never lose good text the last run produced. The note records both
+    the shortfall AND that the text is stale (not revised this run); confidence
+    rides along from the prior so the reader is not told the carried text was
+    freshly graded."""
+    content = (prior or {}).get("content") or ""
+    if not content.strip():
+        return
+    res.content = content
+    res.filled = True
+    conf = (prior or {}).get("confidence")
+    res.confidence = conf if conf else blend_confidence(None, [])
+    res.note = f"carried from prior, not revised: {shortfall}"
+
+
 def _run_report(compiled, *, corpus, tools, counting, budget, guidance,
                 prior_sections, max_llm_calls, should_cancel, on_progress):
-    prior_by_key = {p.get("key"): (p.get("content") or "")
-                    for p in prior_sections}
+    # keep the FULL prior dicts (content + confidence), not just content: a
+    # section that ends unfilled carries the prior's content and confidence
+    prior_by_key = {p.get("key"): p for p in prior_sections}
     report_md = load_report_md()
     results = [SectionResult(key=s.key, title=s.title)
                for s in compiled.sections]
     citations: list = []
     run_log: list[dict] = []
     halted: str | None = None   # run-level early-stop reason, once set
+    # run-level round_cap bubbles up ONLY from a unit that BOTH ran out of
+    # rounds AND produced nothing (a section its own unit filled - even via
+    # forced synthesis under a quota - is not a truncation to report)
+    round_cap_empty = False
 
     for i, (section, res) in enumerate(zip(compiled.sections, results)):
         if halted is None and should_cancel is not None and should_cancel():
             halted = "cancelled"
             res.note = "cancelled"
         if halted is not None:
-            res.note = res.note or f"skipped: {'llm call cap' if halted == 'call_cap' else halted}"
+            res.note = res.note or _skipped_note(halted)
+            _carry_prior(res, prior_by_key.get(section.key),
+                         _SHORTFALL.get(halted, halted))
             continue
         unit_budget = budget
         if max_llm_calls is not None:
@@ -110,6 +157,8 @@ def _run_report(compiled, *, corpus, tools, counting, budget, guidance,
             if remaining < _MIN_UNIT_CALLS:
                 halted = "call_cap"
                 res.note = "skipped: llm call cap"
+                _carry_prior(res, prior_by_key.get(section.key),
+                             _SHORTFALL["call_cap"])
                 continue
             # greedy-with-floor: every unit that runs gets at least the
             # 2-call minimum; fair share only widens it (see module docstring)
@@ -119,9 +168,10 @@ def _run_report(compiled, *, corpus, tools, counting, budget, guidance,
         if on_progress is not None:
             on_progress({"phase": "running", "section": res.key,
                          "sections_done": i, "sections_total": len(results)})
+        prior = prior_by_key.get(section.key)
         prompt = compose_section_prompt(
             compiled.goal, section, corpus=corpus, guidance=guidance,
-            prior_content=prior_by_key.get(section.key))
+            prior_content=(prior or {}).get("content"))
         calls_before = counting.usage.llm_calls
         try:
             unit = research_agent.run(prompt, tools=tools, llm=counting,
@@ -135,6 +185,19 @@ def _run_report(compiled, *, corpus, tools, counting, budget, guidance,
             res.note = "llm call cap"
             res.llm_calls = counting.usage.llm_calls - calls_before
             halted = "call_cap"
+            _carry_prior(res, prior, _SHORTFALL["call_cap"])
+            continue
+        except Exception as e:
+            # a unit crashing (a bad tool, a provider error, a malformed reply)
+            # halts the run but must NOT discard sections that already landed -
+            # the same partial-survival guarantee the call cap gives. The
+            # message is truncated so a giant provider error can't bloat the
+            # note (String(16) stop column holds only "failed").
+            msg = f"{type(e).__name__}: {e}"[:200]
+            res.note = f"unit failed: {msg}"
+            res.llm_calls = counting.usage.llm_calls - calls_before
+            halted = "failed"
+            _carry_prior(res, prior, _SHORTFALL["failed"])
             continue
         res.llm_calls = counting.usage.llm_calls - calls_before
         res.stop_reason = unit.stop_reason
@@ -143,6 +206,7 @@ def _run_report(compiled, *, corpus, tools, counting, budget, guidance,
         if unit.stop_reason == "cancelled":
             res.note = "cancelled"
             halted = "cancelled"
+            _carry_prior(res, prior, _SHORTFALL["cancelled"])
             continue
         content, grade = split_grade_marker(unit.markdown or "")
         res.confidence = blend_confidence(grade, unit.citations)
@@ -152,13 +216,18 @@ def _run_report(compiled, *, corpus, tools, counting, budget, guidance,
             res.filled = True
         else:
             res.note = "no content produced"
+            # judge round_cap on the UNIT's own outcome, before any carry
+            # fills content - carry must not mask a genuine truncation
+            if unit.stop_reason == "round_cap":
+                round_cap_empty = True
+            _carry_prior(res, prior, _SHORTFALL["no_content"])
 
     for res in results:   # skipped/failed sections still report numbers
         if not res.confidence:
             res.confidence = blend_confidence(None, [])
     if halted is not None:
         stop = halted
-    elif any(r.stop_reason == "round_cap" for r in results):
+    elif round_cap_empty:
         stop = "round_cap"
     else:
         stop = "final"

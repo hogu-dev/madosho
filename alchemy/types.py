@@ -49,8 +49,11 @@ class Usage:
 @dataclass
 class SectionResult:
     """One section's outcome from a report run. note says WHY when unfilled
-    ("skipped: llm call cap", "cancelled", "no content produced") - the
-    honest-shortfall principle applies per section, not just per run.
+    ("skipped: llm call cap", "cancelled", "no content produced",
+    "unit failed: ...", "skipped: run failed") or, on a rerun that reused the
+    prior run's text, why it was not revised ("carried from prior, not
+    revised: ...") - the honest-shortfall principle applies per section, not
+    just per run.
     confidence is blend_confidence's dict (level + the numbers behind it);
     llm_calls is this unit's share of the run's accounting."""
     key: str
