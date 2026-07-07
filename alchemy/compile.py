@@ -19,7 +19,11 @@ _DEFAULT_REPORT_GOAL = "Fill in the report sections from the corpus evidence."
 
 def compile_spec(goal_type: str, spec: dict) -> CompiledGoal:
     if goal_type == "living-research":
-        goal = (spec.get("goal") or "").strip()
+        # guard non-string goals (e.g. a JSON number) here, not just empty
+        # ones: this is the single validation the API now delegates to, so a
+        # bad type must raise ValueError (-> 400), never an AttributeError
+        raw = spec.get("goal")
+        goal = raw.strip() if isinstance(raw, str) else ""
         if not goal:
             raise ValueError("spec must carry a non-empty 'goal'")
         return CompiledGoal(goal=goal,
@@ -39,20 +43,34 @@ def _compile_report(spec: dict) -> CompiledGoal:
 
     Rules: the first `# ` line is the report title; any other prose before
     the first `## ` heading is the goal preamble; each `## ` heading opens a
-    section whose body (until the next `## `) is its instruction. Fenced
-    code blocks are opaque - a `## ` inside ``` is template content, not a
-    heading. A heading with an empty body means "the heading IS the
-    instruction" (a bare skeleton template is legal)."""
+    section whose body (until the next `## `) is its instruction. Fenced code
+    blocks are opaque - a `## ` inside a fence is template content, not a
+    heading. Both backtick (```) and tilde (~~~) fences count, and a fence is
+    closed only by its OWN marker: a ``` line inside a ~~~ fence does not close
+    it (and vice versa), so a heading buried in a tilde fence stays opaque. A
+    heading with an empty body means "the heading IS the instruction" (a bare
+    skeleton template is legal)."""
     template = spec.get("template")
     if not isinstance(template, str) or not template.strip():
         raise ValueError("report spec must carry a non-empty 'template'")
+    # strip one leading UTF-8 BOM: Windows editors save UTF-8-with-BOM, and a
+    # BOM glued to the first character defeats the "# "/"## " prefix checks
+    if template.startswith("\ufeff"):
+        template = template[1:]
     title = ""
     preamble: list[str] = []
     raw_sections: list[tuple[str, list[str]]] = []
-    in_fence = False
+    fence: str | None = None   # the marker (``` or ~~~) that OPENED the fence
     for line in template.splitlines():
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
+        stripped = line.lstrip()
+        if fence is None:
+            if stripped.startswith("```"):
+                fence = "```"
+            elif stripped.startswith("~~~"):
+                fence = "~~~"
+        elif stripped.startswith(fence):
+            fence = None
+        in_fence = fence is not None
         if not in_fence and line.startswith("## "):
             raw_sections.append((line[3:].strip(), []))
             continue

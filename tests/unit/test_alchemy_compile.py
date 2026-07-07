@@ -72,6 +72,31 @@ def test_report_heading_inside_code_fence_is_not_a_section():
     assert "## not a heading" in cg.sections[0].instruction
 
 
+def test_report_heading_inside_tilde_fence_is_not_a_section():
+    # a ## inside a ~~~ fence is opaque, same as inside a ``` fence
+    t = "## Real\n\nExample:\n~~~\n## not a heading\n~~~\nmore.\n"
+    cg = compile_spec("report", {"template": t})
+    assert [s.key for s in cg.sections] == ["real"]
+    assert "## not a heading" in cg.sections[0].instruction
+
+
+def test_report_backtick_inside_tilde_fence_does_not_close_it():
+    # a ``` line inside a ~~~ fence must NOT close the tilde fence, so a ## AFTER
+    # that backtick line - still inside the tilde fence - stays opaque
+    t = ("## Real\n\nExample:\n~~~\n```\n## still not a heading\n~~~\nafter.\n")
+    cg = compile_spec("report", {"template": t})
+    assert [s.key for s in cg.sections] == ["real"]
+    assert "## still not a heading" in cg.sections[0].instruction
+
+
+def test_report_strips_leading_bom():
+    # a UTF-8 BOM glued to the first line must not defeat "# "/"## " detection
+    cg = compile_spec("report", {"template": "\ufeff## Only\n\nbody\n"})
+    assert [s.key for s in cg.sections] == ["only"]
+    cg2 = compile_spec("report", {"template": "\ufeff# T\n\n## A\n"})
+    assert cg2.title == "T"
+
+
 def test_report_requires_template():
     with pytest.raises(ValueError):
         compile_spec("report", {})
