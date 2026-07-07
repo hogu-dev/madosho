@@ -574,6 +574,59 @@ def test_full_coverage_failure_reported_honestly():
     assert result.sections[0].confidence["coverage_complete"] is False
 
 
+class IncompleteCoverageHighFactsTools(LedgerFakeTools):
+    """3 docs; search cites TWO of them (docs 1 and 3) so the unit's own
+    facts earn the "high" ceiling (>=2 distinct docs) - unlike the other
+    full-coverage tests above, where search only ever touches doc 1 and
+    "medium" could just as easily be the 1-doc ceiling. The forced pass's
+    search-doc on the untouched doc 2 FAILS, so coverage stays incomplete
+    even though nothing about the section's own evidence was weak. This is
+    what proves the confidence backfill (a real demotion), not the ceiling."""
+    def __init__(self):
+        super().__init__(docs=[
+            {"id": 1, "filename": "a.txt", "status": "indexed"},
+            {"id": 2, "filename": "b.txt", "status": "indexed"},
+            {"id": 3, "filename": "c.txt", "status": "indexed"}])
+
+    def invoke(self, name, args):
+        self.calls.append((name, args))
+        if name == "list-documents":
+            return ToolResult(ok=True, data={"corpus": args.get("corpus"),
+                                             "documents": list(self.docs)})
+        if name == "search":
+            return ToolResult(ok=True, data={"hits": [
+                {"document_id": 1, "pipeline_id": 2, "pipeline": "p",
+                 "position": 0, "citation": "doc 1 @0", "source": "a.txt",
+                 "score": 0.9, "text": "evidence from doc one"},
+                {"document_id": 3, "pipeline_id": 2, "pipeline": "p",
+                 "position": 0, "citation": "doc 3 @0", "source": "c.txt",
+                 "score": 0.85, "text": "evidence from doc three"}]})
+        if name == "search-doc":
+            return ToolResult(ok=False, error="pipeline missing")
+        return ToolResult(ok=True, data={})
+
+
+def test_full_coverage_demotes_genuine_high_not_just_low_doc_ceiling():
+    # one search round citing 2 distinct docs, then a self-graded-high write -
+    # on the facts alone this section clears the "high" ceiling outright
+    llm = ScriptedLlm([
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="1", name="search",
+                     arguments={"corpus": "c", "query": "q"})], usage=None),
+        AssistantTurn(text="body\nCONFIDENCE: high", usage=None),
+    ])
+    result = alchemy.run_goal(
+        "report", {"template": _one_section_template()}, corpus="c",
+        tools=IncompleteCoverageHighFactsTools(), llm=llm, coverage="full")
+    # run-level coverage never completed: doc 2's forced search-doc failed
+    assert result.ledger["complete"] is False
+    # the unit itself hit 2 distinct docs - the facts-ceiling here is "high",
+    # so "medium" below can ONLY be the coverage backfill, not the 1-doc cap
+    assert result.sections[0].confidence["distinct_docs"] == 2
+    assert result.sections[0].confidence["coverage_complete"] is False
+    assert result.sections[0].confidence["level"] == "medium"
+
+
 def test_full_coverage_respects_call_cap():
     # cap = 2: the single section unit gets both calls (quota floor), leaving
     # nothing for the revision - forced RETRIEVAL still happens (free), the

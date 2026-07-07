@@ -125,6 +125,9 @@ def _forced_pass(ledger, weak: list, *, goal: str, tools, counting,
         ev_block.append(e)
         used += len(e)
     for res in weak:
+        if should_cancel is not None and should_cancel():
+            ledger.shortfall = "cancelled"
+            return new_citations, "cancelled"
         if max_llm_calls is not None and counting.usage.llm_calls >= max_llm_calls:
             ledger.shortfall = "llm call cap"
             return new_citations, "call_cap"
@@ -305,7 +308,7 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
         markdown = body.content
         if forced_halt is not None:
             stop = forced_halt
-    return GoalRunResult(markdown=markdown, citations=citations,
+    return GoalRunResult(markdown=markdown, citations=_dedupe_citations(citations),
                          run_log=list(report.run_log), stop_reason=stop,
                          usage=counting.usage, ledger=ledger.to_dict())
 
