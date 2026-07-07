@@ -63,3 +63,36 @@ def test_blend_ignores_anonymous_citations_for_docs():
     c = blend_confidence("high", [_cit(None), _cit(3)])
     assert c["distinct_docs"] == 1
     assert c["citations"] == 2
+
+
+def _cits(n):
+    class C:
+        def __init__(self, d):
+            self.document_id = d
+    return [C(i) for i in range(1, n + 1)]
+
+
+def test_incomplete_coverage_caps_at_medium():
+    got = blend_confidence("high", _cits(3), coverage_ok=False)
+    assert got["level"] == "medium"
+    assert got["coverage_complete"] is False
+
+
+def test_incomplete_coverage_never_raises_a_low():
+    got = blend_confidence("low", _cits(3), coverage_ok=False)
+    assert got["level"] == "low"
+
+
+def test_complete_coverage_recorded_but_not_a_boost():
+    got = blend_confidence("high", _cits(3), coverage_ok=True)
+    assert got["level"] == "high"
+    assert got["coverage_complete"] is True
+    # facts still cap: 1 doc stays medium even with complete coverage
+    got1 = blend_confidence("high", _cits(1), coverage_ok=True)
+    assert got1["level"] == "medium"
+
+
+def test_no_coverage_signal_is_stage_b_behavior():
+    got = blend_confidence("high", _cits(3))
+    assert got["level"] == "high"
+    assert "coverage_complete" not in got

@@ -6,7 +6,8 @@ docs gets marked down". The mechanical facts available in stage B are the
 unit's citations (gathered from tool traffic, never model claims): distinct
 contributing documents cap the level. min(self_grade, fact_ceiling) means the
 model can only LOWER what the facts would allow, never raise it. Coverage
-facts join the blend in stage C.
+facts joined the blend in stage C: an unmet coverage guarantee caps every
+fresh section at medium.
 
 The self-grade travels as a final "CONFIDENCE: high|medium|low" line in the
 unit's reply (the report prompt pack mandates it). Parsing a trailing marker
@@ -33,14 +34,27 @@ def split_grade_marker(text: str) -> tuple[str, str | None]:
     return text, None
 
 
-def blend_confidence(self_grade: str | None, citations: list) -> dict:
+def blend_confidence(self_grade: str | None, citations: list,
+                     coverage_ok: bool | None = None) -> dict:
     """Blend the model's self-grade with citation facts. Returns the level
-    PLUS the numbers behind it - never a bare adjective."""
+    PLUS the numbers behind it - never a bare adjective.
+
+    coverage_ok is the run-level ledger verdict (stage C): False caps the
+    level at "medium" - a section cannot be "high confidence" when the run
+    provably did not meet its coverage guarantee, because unconsulted docs
+    could contradict it. True is recorded but never RAISES a level (coverage
+    is a floor-of-doubt remover, not evidence). None means no guarantee was
+    in play (search mode), which is exactly stage-B behavior."""
     distinct_docs = len({getattr(c, "document_id", None) for c in citations
                          if getattr(c, "document_id", None) is not None})
     ceiling = "low" if distinct_docs == 0 else (
         "medium" if distinct_docs == 1 else "high")
     base = self_grade if self_grade in LEVELS else "medium"
     level = min(base, ceiling, key=LEVELS.index)
-    return {"level": level, "self_grade": self_grade,
-            "distinct_docs": distinct_docs, "citations": len(citations)}
+    if coverage_ok is False:
+        level = min(level, "medium", key=LEVELS.index)
+    out = {"level": level, "self_grade": self_grade,
+           "distinct_docs": distinct_docs, "citations": len(citations)}
+    if coverage_ok is not None:
+        out["coverage_complete"] = coverage_ok
+    return out
