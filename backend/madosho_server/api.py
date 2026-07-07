@@ -681,6 +681,16 @@ class AlchemyRunRead(BaseModel):
     run_log: list | None = None                 # "
     sections: list | None = None                # only on the single-run GET
     ledger: dict | None = None                  # only on the single-run GET
+    artifact_counts: dict | None = None         # {kind: n} on the single-run GET
+
+
+class AlchemyArtifactRead(BaseModel):
+    id: int
+    kind: str
+    key: str
+    document_id: int | None = None
+    payload: dict | None = None
+    created_at: str | None = None
 
 
 class AlchemyRunList(BaseModel):
@@ -1887,6 +1897,12 @@ def _alchemy_run_dict(r: "db.AlchemyRun", with_draft: bool = False) -> dict:
     return d
 
 
+def _alchemy_artifact_dict(a: "db.AlchemyArtifact") -> dict:
+    return {"id": a.id, "kind": a.kind, "key": a.key,
+            "document_id": a.document_id, "payload": a.payload,
+            "created_at": _iso(a.created_at)}
+
+
 def _resolve_goal(session, ref: str):
     """A goal ref is its numeric id or its unique name."""
     g = None
@@ -2051,6 +2067,8 @@ def delete_alchemy_goal(ref: str, session: SessionDep):
     g = _resolve_goal(session, ref)
     if g is None:
         raise HTTPException(status_code=404, detail="goal not found")
+    session.query(db.AlchemyArtifact).filter(
+        db.AlchemyArtifact.goal_id == g.id).delete()
     session.query(db.AlchemyRun).filter(db.AlchemyRun.goal_id == g.id).delete()
     session.delete(g)
     session.commit()
@@ -2127,7 +2145,32 @@ def get_alchemy_run(ref: str, version: int, session: SessionDep):
                                  db.AlchemyRun.version == version)).first()
     if run is None:
         raise HTTPException(status_code=404, detail="run version not found")
-    return _alchemy_run_dict(run, with_draft=True)
+    d = _alchemy_run_dict(run, with_draft=True)
+    # a cheap group-by so `status` can show "artifacts: 2 digest" without a
+    # second round-trip; only counts (not full payloads) ride the run detail.
+    counts: dict[str, int] = {}
+    for (kind,) in session.query(db.AlchemyArtifact.kind).filter(
+            db.AlchemyArtifact.run_id == run.id):
+        counts[kind] = counts.get(kind, 0) + 1
+    d["artifact_counts"] = counts
+    return d
+
+
+@app.get("/alchemy/goals/{ref}/runs/{version}/artifacts",
+         response_model=list[AlchemyArtifactRead])
+def list_alchemy_artifacts(ref: str, version: int, session: SessionDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    run = session.scalars(select(db.AlchemyRun)
+                          .where(db.AlchemyRun.goal_id == g.id,
+                                 db.AlchemyRun.version == version)).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="run version not found")
+    rows = session.scalars(select(db.AlchemyArtifact)
+                           .where(db.AlchemyArtifact.run_id == run.id)
+                           .order_by(db.AlchemyArtifact.id)).all()
+    return [_alchemy_artifact_dict(a) for a in rows]
 
 
 @app.post("/alchemy/goals/{ref}/finalize", response_model=AlchemyRunRead)

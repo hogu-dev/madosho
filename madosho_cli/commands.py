@@ -339,6 +339,11 @@ def cmd_alchemy_status(args: argparse.Namespace) -> int:
         summary = (d.get("ledger") or {}).get("summary")
         if summary:
             lines.append(f"  coverage: {summary}")
+        counts = d.get("artifact_counts") or {}
+        if counts:
+            # sorted for a stable line: "artifacts: 2 digest, 1 handoff"
+            parts = ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))
+            lines.append(f"  artifacts: {parts}")
         return "\n".join(lines)
 
     _emit_or_print(args, data, _fmt)
@@ -379,6 +384,38 @@ def cmd_alchemy_runs(args: argparse.Namespace) -> int:
                    lambda rows: "\n".join(f"v{r['version']}\t{r['status']}\t"
                                           f"{'FINAL' if r.get('is_final') else ''}"
                                           for r in rows) or "no runs")
+    return 0
+
+
+def _artifact_summary(kind, payload):
+    """One-line, kind-aware payload gloss for the human view. Cheap: reads a
+    couple of keys, never dumps the whole payload (use --json for that)."""
+    payload = payload or {}
+    if kind == "digest":
+        return (f"{payload.get('filename', '?')} "
+                f"({len(payload.get('text') or '')} chars)")
+    if kind == "handoff":
+        docs = payload.get("docs_covered") or []
+        return (f"attempt {payload.get('attempt', '?')}, "
+                f"{len(docs)} docs, {payload.get('partial_chars', 0)} chars")
+    return ""
+
+
+def cmd_alchemy_artifacts(args: argparse.Namespace) -> int:
+    version = args.run or core.alchemy_latest_version(args.ref)
+    if version is None:
+        raise http.CliError(f"no runs for goal {args.ref}")
+    data = core.alchemy_list_artifacts(args.ref, version)
+
+    def _fmt(rows):
+        if not rows:
+            return "no artifacts"
+        return "\n".join(
+            f"{(a.get('kind') or '-'):<8} {(a.get('key') or ''):<24} "
+            f"{_artifact_summary(a.get('kind'), a.get('payload'))}"
+            for a in rows)
+
+    _emit_or_print(args, data, _fmt)
     return 0
 
 

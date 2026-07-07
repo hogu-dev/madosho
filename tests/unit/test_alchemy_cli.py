@@ -458,3 +458,55 @@ def test_alchemy_status_prints_coverage_summary(fake_http, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "coverage full: consulted 2/2 docs" in out
+
+
+def test_alchemy_artifacts_lists(fake_http, capsys):
+    fake_http({
+        "/alchemy/goals/find_vuln/runs/2/artifacts": [
+            {"id": 1, "kind": "digest", "key": "doc-1", "document_id": None,
+             "payload": {"filename": "a.txt", "text": "hello"},
+             "created_at": "2026-07-07T00:00:00"},
+            {"id": 2, "kind": "handoff", "key": "body-h1", "document_id": None,
+             "payload": {"attempt": 1, "docs_covered": [1, 2],
+                         "partial_chars": 40},
+             "created_at": "2026-07-07T00:00:01"},
+        ],
+    })
+    rc = cli_main.main(["alchemy", "artifacts", "find_vuln", "--run", "2"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "digest" in out and "doc-1" in out and "a.txt" in out
+    assert "handoff" in out and "body-h1" in out
+
+
+def test_alchemy_artifacts_json(fake_http, capsys):
+    fake_http({
+        "/alchemy/goals/find_vuln/runs/1/artifacts": [
+            {"id": 1, "kind": "digest", "key": "doc-1", "document_id": None,
+             "payload": {}, "created_at": "2026-07-07T00:00:00"},
+        ],
+    })
+    rc = cli_main.main(["alchemy", "artifacts", "find_vuln", "--run", "1", "--json"])
+    assert rc == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert rows[0]["kind"] == "digest"
+
+
+def test_alchemy_artifacts_empty(fake_http, capsys):
+    fake_http({"/alchemy/goals/find_vuln/runs/3/artifacts": []})
+    rc = cli_main.main(["alchemy", "artifacts", "find_vuln", "--run", "3"])
+    assert rc == 0
+    assert "no artifacts" in capsys.readouterr().out
+
+
+def test_alchemy_status_shows_artifact_counts(fake_http, capsys):
+    fake_http({
+        "/alchemy/goals/find_vuln/runs/1": _run(
+            version=1, status="done", progress={"phase": "done"},
+            artifact_counts={"digest": 2, "handoff": 1}),
+    })
+    rc = cli_main.main(["alchemy", "status", "find_vuln", "--run", "1"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "artifacts:" in out
+    assert "2 digest" in out and "1 handoff" in out

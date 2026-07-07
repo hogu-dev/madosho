@@ -317,6 +317,11 @@ def alchemy_get_run(ref: str, version: int) -> dict[str, Any]:
         f"{http.control_base()}/alchemy/goals/{ref}/runs/{version}")
 
 
+def alchemy_list_artifacts(ref: str, version: int) -> list[dict[str, Any]]:
+    return http.get_json(
+        f"{http.control_base()}/alchemy/goals/{ref}/runs/{version}/artifacts")
+
+
 def alchemy_finalize(ref: str, version: int) -> dict[str, Any]:
     return http.post_json(
         f"{http.control_base()}/alchemy/goals/{ref}/finalize",

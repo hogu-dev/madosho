@@ -416,3 +416,74 @@ def test_run_launch_rejects_unknown_coverage(tmp_path):
     r = client.post("/alchemy/goals/find_vuln/runs", json={
         "llm": {"provider": "openai", "model": "m"}, "coverage": "vibes"})
     assert r.status_code == 422
+
+
+def _seed_artifacts(rid):
+    """Simulate the worker landing artifacts on run `rid` (marks it done)."""
+    with db.SessionLocal() as s:
+        run = s.get(db.AlchemyRun, rid)
+        run.status = "done"
+        s.add(db.AlchemyArtifact(run_id=rid, goal_id=run.goal_id,
+                                 kind="digest", key="doc-1",
+                                 payload={"filename": "a.txt", "text": "x"}))
+        s.add(db.AlchemyArtifact(run_id=rid, goal_id=run.goal_id,
+                                 kind="handoff", key="body-h1",
+                                 payload={"attempt": 1}))
+        s.commit()
+
+
+def test_list_run_artifacts(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    rid = client.post("/alchemy/goals/find_vuln/runs",
+                      json={"llm": {"provider": "openai", "model": "m"}}
+                      ).json()["id"]
+    _seed_artifacts(rid)
+    rows = client.get("/alchemy/goals/find_vuln/runs/1/artifacts").json()
+    assert len(rows) == 2
+    assert {r["kind"] for r in rows} == {"digest", "handoff"}
+    digest = next(r for r in rows if r["kind"] == "digest")
+    assert digest["key"] == "doc-1"
+    assert digest["document_id"] is None
+    assert digest["payload"]["filename"] == "a.txt"
+    assert digest["created_at"]
+
+
+def test_list_artifacts_bad_goal_404(tmp_path):
+    client, _ = _client(tmp_path)
+    r = client.get("/alchemy/goals/nope/runs/1/artifacts")
+    assert r.status_code == 404
+
+
+def test_list_artifacts_bad_version_404(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    r = client.get("/alchemy/goals/find_vuln/runs/9/artifacts")
+    assert r.status_code == 404
+
+
+def test_run_detail_exposes_artifact_counts(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    rid = client.post("/alchemy/goals/find_vuln/runs",
+                      json={"llm": {"provider": "openai", "model": "m"}}
+                      ).json()["id"]
+    _seed_artifacts(rid)
+    got = client.get("/alchemy/goals/find_vuln/runs/1").json()
+    assert got["artifact_counts"] == {"digest": 1, "handoff": 1}
+
+
+def test_delete_goal_removes_artifacts(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    rid = client.post("/alchemy/goals/find_vuln/runs",
+                      json={"llm": {"provider": "openai", "model": "m"}}
+                      ).json()["id"]
+    _seed_artifacts(rid)
+    assert client.delete("/alchemy/goals/find_vuln").status_code == 200
+    with db.SessionLocal() as s:
+        assert s.query(db.AlchemyArtifact).count() == 0

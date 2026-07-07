@@ -218,6 +218,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(p)
     p.set_defaults(func=commands.cmd_alchemy_runs)
 
+    p = alch_sub.add_parser("artifacts", help="list a run's stage artifacts")
+    p.add_argument("ref")
+    p.add_argument("--run", type=int, default=None, help="version (default: latest)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_artifacts)
+
     p = alch_sub.add_parser("cancel", help="cancel a run by id")
     p.add_argument("run_id", type=int)
     _add_json(p)
