@@ -138,6 +138,51 @@ def compose_coverage_query(sections, goal: str) -> str:
     return ("; ".join(parts)[:300]) if parts else goal[:300]
 
 
+def compose_continuation_prompt(goal: str, *, corpus: str, partial: str,
+                                docs_covered: list, remaining: str,
+                                section: Section | None = None,
+                                guidance: str | None = None) -> str:
+    """The prompt for a HANDOFF continuation unit. A prior unit ran out of its
+    round budget (loop stop_reason 'round_cap') with the draft below still
+    unfinished; this fresh unit resumes from that partial instead of starting
+    over. WHY the partial rides in the prompt (not message history): the loop
+    is stateless across runs by design - the draft is the only state worth
+    carrying, exactly as compose_prompt does for a rerun's prior_draft. The
+    unit is also told which documents were already consulted (so it spends its
+    fresh budget on NEW ground, not re-reading) and what work still remains.
+
+    Shared by BOTH goal paths: living-research passes section=None (continue
+    the whole body); a report passes the Section being filled (continue only
+    it, keeping the per-section context budget)."""
+    target = (f"section {section.title or section.key!r}"
+              if section is not None else "report")
+    parts = [
+        f"Research goal: {goal}",
+        f"You are CONTINUING an unfinished {target}. A prior work unit ran out "
+        "of its research-round budget before finishing. Resume its work - do "
+        "NOT start over.",
+        f"Work ONLY within corpus {corpus!r}: pass it as the corpus argument "
+        "to every search, and draw evidence only from documents in it.",
+    ]
+    if section is not None:
+        parts.append(f"Section instructions: {section.instruction}")
+    if docs_covered:
+        parts.append(
+            "Documents the prior unit already consulted (do not re-read these "
+            "unless a detail needs verifying; find NEW evidence): "
+            + ", ".join(str(d) for d in docs_covered))
+    parts.append("Work still outstanding: " + remaining)
+    parts.append(
+        "--- Draft so far (keep what is well-supported, then extend and finish "
+        "it) ---\n"
+        + (partial or "(the prior unit produced no draft text)")
+        + "\n--- End draft so far ---")
+    if guidance:
+        parts.append("The user reviewed the work so far and gave this "
+                     "guidance; treat it as the top priority:\n" + guidance)
+    return "\n\n".join(parts)
+
+
 def compose_forced_revision_prompt(goal: str, title: str, current: str,
                                    evidence: list[str]) -> str:
     """One-turn revision of a weak section with forced-coverage evidence in

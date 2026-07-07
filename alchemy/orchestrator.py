@@ -48,13 +48,18 @@ from .confidence import blend_confidence, split_grade_marker
 from .ledger import (COVERAGE_MODES, CoverageLedger, citations_from_hits,
                      list_corpus_docs)
 from .llm import CallCapExceeded, CountingLlm
-from .prompts import (MINING_MD, compose_coverage_query,
-                      compose_forced_revision_prompt, compose_mining_prompt,
-                      compose_prompt, compose_section_prompt, load_report_md)
+from .prompts import (MINING_MD, compose_continuation_prompt,
+                      compose_coverage_query, compose_forced_revision_prompt,
+                      compose_mining_prompt, compose_prompt,
+                      compose_section_prompt, load_report_md)
 from .render import render_report
 from .types import GoalRunResult, SectionResult
 
 _MIN_UNIT_CALLS = 2   # one working round + the forced synthesis
+_MAX_HANDOFFS = 2   # continuations spawned per unit that runs out of round
+                    # budget before finishing; small on purpose - each costs a
+                    # whole unit's worth of calls, and the point is to rescue a
+                    # truncated draft, not to grind indefinitely
 _FORCED_TOP_K = 5          # chunks pulled per untouched doc in a forced pass
 _WEAK_SECTION_CAP = 3      # revision targets per forced pass; more dilutes
                            # the query and multiplies revision calls
@@ -244,6 +249,116 @@ def _mine_corpus(ledger, sections, *, goal: str, tools, counting, budget,
         if capped:
             return digests, citations
     return digests, citations
+
+
+def _remaining_text(ledger) -> str:
+    """The work-still-outstanding line a continuation is told to tackle:
+    the corpus documents the run has not consulted yet (the ledger's own
+    signal, same source the forced pass uses). Kept small - it rides in a
+    prompt. When nothing is unconsulted (or the corpus size is unknown) the
+    line says 'deepen and finish', never a misleading 'nothing left'."""
+    un = ledger.unconsulted()
+    if not un:
+        return ("no unconsulted documents remain; deepen the weakest parts "
+                "and finish from the evidence already gathered")
+    return "documents not yet consulted: " + ", ".join(str(d) for d in un)
+
+
+def _run_unit_with_handoffs(prompt, *, tools, llm, budget, autonomous_md,
+                            should_cancel, unit_key, ledger, max_handoffs,
+                            compose_continuation):
+    """Run ONE bounded work unit, then keep it going across HANDOFFS when it
+    runs out of round budget WITHOUT finishing.
+
+    The frozen loop signals 'ran out of rounds, not done' with
+    stop_reason == 'round_cap' (loop.py's forced synthesis, never reached when
+    the model finishes on its own). On THAT signal - and only that; final,
+    cancelled and no_tools_used are terminal - we spin a FRESH continuation
+    unit that resumes from the partial draft + the docs already covered + the
+    work still outstanding. research_agent stays frozen: a continuation is a
+    brand-new run with a RESUME prompt, not a re-entered loop.
+
+    Bounded three ways, all honest: max_handoffs caps how many continuations
+    spawn; the shared max_llm_calls / CountingLlm backstop means a continuation
+    that will not fit the remaining allowance is simply NOT spawned (greedy
+    with a floor, exactly like the per-section quota); and each continuation's
+    own round budget is re-derived from the allowance that is left, never
+    exceeding the first unit's - so a continuation cannot starve later units.
+
+    Returns (merged_report, handoffs). The merged Report takes the LAST unit's
+    markdown (each continuation was told to keep+extend the prior draft, so its
+    markdown is authoritative - concatenating would duplicate the kept portion)
+    and stop_reason, with citations and run_log CONCATENATED across every unit
+    (cross-unit citation de-dup stays the caller's job, via _dedupe_citations).
+    handoffs is one artifact dict - the frozen 'handoff' shape - per
+    continuation actually spawned. Each unit's citations are marked into the
+    ledger here, so the caller must not mark them again."""
+    report = research_agent.run(prompt, tools=tools, llm=llm, budget=budget,
+                                autonomous_md=autonomous_md,
+                                should_cancel=should_cancel)
+    ledger.mark_citations(report.citations, "search")
+    cits = list(report.citations)
+    run_log = list(report.run_log)
+    markdown = report.markdown
+    stop = report.stop_reason
+    handoffs: list[dict] = []
+    cap = getattr(llm, "max_calls", None)
+
+    for attempt in range(1, max_handoffs + 1):
+        # only a budget-truncated unit is "unfinished" - nothing to continue
+        # when the model finished, was cancelled, or degenerately said nothing
+        if stop != "round_cap":
+            break
+        # a cancel mid-chain stops cleanly: keep the partial, spawn no more
+        if should_cancel is not None and should_cancel():
+            break
+        # greedy-with-a-floor: if what allowance remains cannot fund even a
+        # floor-sized unit, do not spawn one - an honest partial beats a unit
+        # that would trip the backstop halfway through
+        if cap is not None and (cap - llm.usage.llm_calls) < _MIN_UNIT_CALLS:
+            break
+        # re-derive this continuation's round budget from what is left, capped
+        # by the ORIGINAL unit budget (never more rounds than the first unit).
+        # A cap with no concrete budget falls back to the unit budget; the
+        # backstop below still bounds the spend.
+        cont_budget = budget
+        if cap is not None and budget is not None:
+            remaining_calls = cap - llm.usage.llm_calls
+            cont_budget = replace(budget, max_rounds=max(
+                1, min(budget.max_rounds, remaining_calls - 1)))
+        docs_covered = sorted({c.document_id for c in cits
+                               if c.document_id is not None})
+        remaining = _remaining_text(ledger)
+        # record the handoff BEFORE running: the attempt is spawned regardless
+        # of how the continuation ends, and partial_chars refers to the draft
+        # that was handed off (the pre-continuation markdown)
+        handoffs.append({
+            "kind": "handoff", "key": f"{unit_key}-h{attempt}",
+            "payload": {"unit": unit_key, "attempt": attempt,
+                        "trigger": "round_cap", "docs_covered": docs_covered,
+                        "remaining": remaining,
+                        "partial_chars": len(markdown or "")}})
+        try:
+            cont = research_agent.run(
+                compose_continuation(markdown, docs_covered, remaining),
+                tools=tools, llm=llm, budget=cont_budget,
+                autonomous_md=autonomous_md, should_cancel=should_cancel)
+        except CallCapExceeded:
+            # the backstop tripped INSIDE the continuation: earlier units'
+            # markdown + citations already live on the accumulators, so keep
+            # them rather than lose the partial to a cap trip. (A generic
+            # continuation crash is NOT caught here - the caller's per-section
+            # handler owns crash semantics and the run's "failed" stop.)
+            break
+        ledger.mark_citations(cont.citations, "search")
+        cits.extend(cont.citations)
+        run_log.extend(cont.run_log)
+        markdown = cont.markdown or markdown
+        stop = cont.stop_reason
+
+    merged = research_agent.Report(markdown=markdown, citations=cits,
+                                   run_log=run_log, stop_reason=stop)
+    return merged, handoffs
 
 
 def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,

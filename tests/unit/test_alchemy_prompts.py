@@ -139,3 +139,31 @@ def test_goal_prompt_carries_digests_block():
                                                         instruction="g")])
     p = compose_prompt(compiled, corpus="c", digests_text="[doc 7] facts")
     assert "[doc 7] facts" in p
+
+
+# --- Stage D: handoff continuation prompt ------------------------------------
+
+from alchemy.prompts import compose_continuation_prompt
+
+
+def test_continuation_prompt_living_research_resumes_body():
+    p = compose_continuation_prompt(
+        "map the vulns", corpus="c", partial="draft so far",
+        docs_covered=[3, 7], remaining="documents not yet consulted: 9",
+        section=None, guidance="focus June")
+    assert "map the vulns" in p
+    assert "draft so far" in p               # the partial rides in the prompt
+    assert "3, 7" in p                        # docs already covered are listed
+    assert "documents not yet consulted: 9" in p
+    assert "do NOT start over" in p          # continue, do not restart
+    assert "focus June" in p
+
+
+def test_continuation_prompt_report_names_the_section():
+    sec = Section(key="june", instruction="list incidents", title="June")
+    p = compose_continuation_prompt(
+        "the goal", corpus="c", partial="partial section", docs_covered=[],
+        remaining="none", section=sec)
+    assert "June" in p                        # the section heading
+    assert "list incidents" in p              # its instruction
+    assert "partial section" in p
