@@ -309,6 +309,7 @@ class AlchemyRun(Base):
     run_log: Mapped[list] = mapped_column(JSON_TYPE, default=list)
     sections: Mapped[list] = mapped_column(JSON_TYPE, default=list)          # per-section results (report goals): [{key,title,content,filled,note,confidence,stop_reason,llm_calls}]
     usage: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)         # {llm_calls, prompt_tokens, completion_tokens, total_tokens}
+    ledger: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)         # coverage ledger dict (stage C): {mode,total_docs,consulted,from_prior,unconsulted,failures,complete,shortfall,summary}
     stop_reason: Mapped[str | None] = mapped_column(String(16), default=None)
     is_final: Mapped[bool] = mapped_column(default=False)
     config: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)        # {llm, budget_chars, max_rounds, max_llm_calls}
@@ -393,6 +394,9 @@ def _ensure_added_columns() -> None:
         conn.execute(text(
             "ALTER TABLE alchemy_run ADD COLUMN IF NOT EXISTS "
             "sections JSONB NOT NULL DEFAULT '[]'::jsonb"))
+        conn.execute(text(
+            "ALTER TABLE alchemy_run ADD COLUMN IF NOT EXISTS "
+            "ledger JSONB NOT NULL DEFAULT '{}'::jsonb"))
 
 
 def seed_llm_endpoints_from_env(settings) -> bool:

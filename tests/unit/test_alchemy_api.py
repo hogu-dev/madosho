@@ -355,3 +355,22 @@ def test_delete_goal_removes_runs(tmp_path):
                 json={"llm": {"provider": "openai", "model": "m"}})
     assert client.delete("/alchemy/goals/find_vuln").status_code == 200
     assert client.get("/alchemy/goals/find_vuln").status_code == 404
+
+
+def test_run_detail_exposes_ledger(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    rid = client.post("/alchemy/goals/find_vuln/runs",
+                      json={"llm": {"provider": "openai", "model": "m"}}
+                      ).json()["id"]
+    with db.SessionLocal() as s:   # simulate the worker landing a ledger
+        run = s.get(db.AlchemyRun, rid)
+        run.ledger = {"mode": "search", "summary": "s"}
+        run.status = "done"
+        s.commit()
+    got = client.get("/alchemy/goals/find_vuln/runs/1").json()
+    assert got["ledger"] == {"mode": "search", "summary": "s"}
+    # the list view stays light - no ledger there
+    listed = client.get("/alchemy/goals/find_vuln/runs").json()
+    assert "ledger" not in listed[0]

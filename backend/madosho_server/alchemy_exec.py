@@ -43,7 +43,8 @@ def _make_progress_writer(alchemy_run_id):
 
 def _default_run_goal(goal_type, spec, *, corpus, settings, guidance,
                       prior_draft, provider, model, budget_chars, max_rounds,
-                      max_llm_calls, alchemy_run_id, prior_sections=None,
+                      max_llm_calls, alchemy_run_id, coverage="search",
+                      prior_sections=None, prior_ledger=None,
                       on_progress=None, tools=None, llm=None,
                       should_cancel=None):
     """Real path: build the CLI tool provider + any_llm client from madosho's
@@ -56,8 +57,9 @@ def _default_run_goal(goal_type, spec, *, corpus, settings, guidance,
     the placeholders execute_alchemy_run hands the fake seam (tools=None,
     llm=None, should_cancel=<the real cancel check>). The real path builds its
     own tool/llm providers below and its own should_cancel closure at return
-    time, so all three are discarded here. prior_sections/on_progress are
-    REAL and forwarded straight through to the engine."""
+    time, so all three are discarded here. coverage/prior_sections/
+    prior_ledger/on_progress are REAL and forwarded straight through to the
+    engine."""
     import research_agent
     import alchemy
     endpoint = research_agent.LlmEndpoint(
@@ -68,9 +70,11 @@ def _default_run_goal(goal_type, spec, *, corpus, settings, guidance,
     budget = research_agent.RunBudget(max_context_chars=budget_chars,
                                       max_rounds=max_rounds)
     return alchemy.run_goal(goal_type, spec, corpus=corpus, tools=tools,
-                            llm=llm, budget=budget, guidance=guidance,
+                            llm=llm, budget=budget, coverage=coverage,
+                            guidance=guidance,
                             prior_draft=prior_draft,
                             prior_sections=prior_sections,
+                            prior_ledger=prior_ledger,
                             max_llm_calls=max_llm_calls,
                             should_cancel=_make_cancel_check(alchemy_run_id),
                             on_progress=on_progress)
@@ -92,6 +96,15 @@ def _prior_sections_for(session, goal_id, based_on_version):
         db.AlchemyRun.goal_id == goal_id,
         db.AlchemyRun.version == based_on_version).first()
     return prior.sections if prior is not None else None
+
+
+def _prior_ledger_for(session, goal_id, based_on_version):
+    if based_on_version is None:
+        return None
+    prior = session.query(db.AlchemyRun).filter(
+        db.AlchemyRun.goal_id == goal_id,
+        db.AlchemyRun.version == based_on_version).first()
+    return prior.ledger if prior is not None else None
 
 
 def _usage_dict(usage):
@@ -138,6 +151,11 @@ def execute_alchemy_run(session, alchemy_run_id: int, settings,
 
     prior_draft = _prior_draft_for(session, goal.id, run.based_on_version)
     prior_sections = _prior_sections_for(session, goal.id, run.based_on_version)
+    # fresh_coverage opts a rerun OUT of the union-of-chain guarantee (the
+    # spec's "unless guidance says to" knob, made explicit): the run then
+    # re-consults from scratch instead of inheriting v(N-1)'s ledger.
+    prior_ledger = (None if cfg.get("fresh_coverage")
+                    else _prior_ledger_for(session, goal.id, run.based_on_version))
     runner = run_goal_fn or (lambda goal_type, spec, **kw: _default_run_goal(
         goal_type, spec, settings=settings, provider=provider, model=model,
         budget_chars=cfg.get("budget_chars", 100_000),
@@ -147,8 +165,10 @@ def execute_alchemy_run(session, alchemy_run_id: int, settings,
     try:
         result = runner(goal.goal_type, goal.spec, corpus=corpus.name,
                         tools=None, llm=None, guidance=run.guidance,
+                        coverage=run.coverage or "search",
                         prior_draft=prior_draft,
                         prior_sections=prior_sections,
+                        prior_ledger=prior_ledger,
                         on_progress=_make_progress_writer(alchemy_run_id),
                         should_cancel=_make_cancel_check(alchemy_run_id))
         run.draft_markdown = result.markdown
@@ -158,6 +178,7 @@ def execute_alchemy_run(session, alchemy_run_id: int, settings,
         run.sections = _section_dicts(result)
         run.stop_reason = result.stop_reason
         run.usage = _usage_dict(result.usage)
+        run.ledger = getattr(result, "ledger", None) or {}
         run.progress = {"phase": "done"}
         session.flush()  # persist before the cancel re-read
         if _is_alchemy_cancelled(session, alchemy_run_id):

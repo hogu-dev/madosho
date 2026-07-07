@@ -40,6 +40,7 @@ class FakeResult:
                           "content": "ok", "filled": True, "note": "",
                           "confidence": {"level": "medium"},
                           "stop_reason": "final", "llm_calls": 2}]
+        self.ledger = {}
 
 
 def test_execute_writes_draft_and_usage(tmp_path):
@@ -47,7 +48,8 @@ def test_execute_writes_draft_and_usage(tmp_path):
     seen = {}
 
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
-                      guidance=None, prior_draft=None, prior_sections=None,
+                      coverage="search", guidance=None, prior_draft=None,
+                      prior_sections=None, prior_ledger=None,
                       on_progress=None, should_cancel=None):
         seen.update(goal_type=goal_type, corpus=corpus, guidance=guidance,
                     prior_draft=prior_draft)
@@ -73,7 +75,8 @@ def test_execute_passes_prior_draft_on_rerun(tmp_path):
     captured = {}
 
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
-                      guidance=None, prior_draft=None, prior_sections=None,
+                      coverage="search", guidance=None, prior_draft=None,
+                      prior_sections=None, prior_ledger=None,
                       on_progress=None, should_cancel=None):
         captured.update(prior_draft=prior_draft, guidance=guidance)
         return FakeResult()
@@ -104,7 +107,8 @@ def test_execute_real_path_wrapper_call_shape(tmp_path, monkeypatch):
     def stand_in(goal_type, spec, *, corpus, settings, guidance, prior_draft,
                  provider, model, budget_chars, max_rounds, max_llm_calls,
                  alchemy_run_id, tools=None, llm=None, should_cancel=None,
-                 prior_sections=None, on_progress=None):
+                 coverage="search", prior_sections=None, prior_ledger=None,
+                 on_progress=None):
         got.update(tools=tools, llm=llm, should_cancel=should_cancel,
                    budget_chars=budget_chars, max_rounds=max_rounds,
                    max_llm_calls=max_llm_calls)
@@ -128,7 +132,8 @@ def test_execute_honours_cancel_set_during_run(tmp_path):
     rid = _seed(tmp_path)
 
     def cancelling_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
-                            guidance=None, prior_draft=None, prior_sections=None,
+                            coverage="search", guidance=None, prior_draft=None,
+                            prior_sections=None, prior_ledger=None,
                             on_progress=None, should_cancel=None):
         # simulate an external cancel arriving while the goal is working, via
         # a separate session/connection (as a real API request would use)
@@ -184,7 +189,8 @@ def test_execute_persists_sections(tmp_path):
     rid = _seed(tmp_path)
 
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
-                      guidance=None, prior_draft=None, prior_sections=None,
+                      coverage="search", guidance=None, prior_draft=None,
+                      prior_sections=None, prior_ledger=None,
                       on_progress=None, should_cancel=None):
         return FakeResult()
 
@@ -206,7 +212,8 @@ def test_execute_passes_prior_sections_on_rerun(tmp_path):
     captured = {}
 
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
-                      guidance=None, prior_draft=None, prior_sections=None,
+                      coverage="search", guidance=None, prior_draft=None,
+                      prior_sections=None, prior_ledger=None,
                       on_progress=None, should_cancel=None):
         captured.update(prior_sections=prior_sections)
         return FakeResult()
@@ -222,7 +229,8 @@ def test_execute_progress_callback_writes_row(tmp_path):
     rid = _seed(tmp_path)
 
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
-                      guidance=None, prior_draft=None, prior_sections=None,
+                      coverage="search", guidance=None, prior_draft=None,
+                      prior_sections=None, prior_ledger=None,
                       on_progress=None, should_cancel=None):
         on_progress({"phase": "running", "section": "summary",
                      "sections_done": 0, "sections_total": 2})
@@ -319,3 +327,86 @@ def test_dataclass_sections_serialized(tmp_path):
                         "filled": True, "note": "",
                         "confidence": {"level": "low"},
                         "stop_reason": "", "llm_calls": 0}]
+
+
+def _seed_v2(tmp_path, *, v1_ledger=None, fresh=False):
+    """Seed a goal with a done v1 (carrying a ledger) and a pending v2 that
+    revises it. Returns (db_path-configured, v2_run_id)."""
+    db.configure_engine(f"sqlite:///{tmp_path/'a.db'}")
+    db.create_all()
+    with db.SessionLocal() as s:
+        c = db.Corpus(name="secdocs"); s.add(c); s.flush()
+        g = db.AlchemyGoal(name="find_vuln", corpus_id=c.id,
+                           goal_type="living-research",
+                           spec={"goal": "map vulns"}, coverage="search")
+        s.add(g); s.flush()
+        s.add(db.AlchemyRun(goal_id=g.id, version=1, status="done",
+                            coverage="search", draft_markdown="v1 draft",
+                            ledger=v1_ledger or {},
+                            config={"llm": {"provider": "p", "model": "m"}}))
+        cfg = {"llm": {"provider": "p", "model": "m"}}
+        if fresh:
+            cfg["fresh_coverage"] = True
+        v2 = db.AlchemyRun(goal_id=g.id, version=2, status="pending",
+                           coverage="search", based_on_version=1, config=cfg)
+        s.add(v2); s.commit()
+        return v2.id
+
+
+def test_exec_persists_ledger_and_passes_coverage(tmp_path):
+    rid = _seed(tmp_path)
+    seen = {}
+
+    def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
+                      coverage="search", guidance=None, prior_draft=None,
+                      prior_sections=None, prior_ledger=None,
+                      on_progress=None, should_cancel=None):
+        seen.update(coverage=coverage, prior_ledger=prior_ledger)
+        r = FakeResult()
+        r.ledger = {"mode": "search", "summary": "ok"}
+        return r
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env(),
+                                         run_goal_fn=fake_run_goal)
+        assert s.get(db.AlchemyRun, rid).ledger == {"mode": "search",
+                                                    "summary": "ok"}
+    assert seen["coverage"] == "search"
+    assert seen["prior_ledger"] is None
+
+
+def test_exec_passes_prior_ledger_from_based_on_run(tmp_path):
+    rid = _seed_v2(tmp_path, v1_ledger={"consulted": {"3": "search"}})
+    seen = {}
+
+    def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
+                      coverage="search", guidance=None, prior_draft=None,
+                      prior_sections=None, prior_ledger=None,
+                      on_progress=None, should_cancel=None):
+        seen["prior_ledger"] = prior_ledger
+        r = FakeResult(); r.ledger = {}
+        return r
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env(),
+                                         run_goal_fn=fake_run_goal)
+    assert seen["prior_ledger"] == {"consulted": {"3": "search"}}
+
+
+def test_exec_fresh_coverage_skips_prior_ledger(tmp_path):
+    rid = _seed_v2(tmp_path, v1_ledger={"consulted": {"3": "search"}},
+                   fresh=True)
+    seen = {}
+
+    def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
+                      coverage="search", guidance=None, prior_draft=None,
+                      prior_sections=None, prior_ledger=None,
+                      on_progress=None, should_cancel=None):
+        seen["prior_ledger"] = prior_ledger
+        r = FakeResult(); r.ledger = {}
+        return r
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env(),
+                                         run_goal_fn=fake_run_goal)
+    assert seen["prior_ledger"] is None

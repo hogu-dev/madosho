@@ -673,6 +673,7 @@ class AlchemyRunRead(BaseModel):
     citations: list | None = None               # "
     run_log: list | None = None                 # "
     sections: list | None = None                # only on the single-run GET
+    ledger: dict | None = None                  # only on the single-run GET
 
 
 class AlchemyRunList(BaseModel):
@@ -1875,7 +1876,7 @@ def _alchemy_run_dict(r: "db.AlchemyRun", with_draft: bool = False) -> dict:
          "finished_at": _iso(r.finished_at)}
     if with_draft:
         d.update(draft_markdown=r.draft_markdown, citations=r.citations,
-                 run_log=r.run_log, sections=r.sections)
+                 run_log=r.run_log, sections=r.sections, ledger=r.ledger)
     return d
 
 

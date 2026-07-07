@@ -90,3 +90,36 @@ def test_run_sections_defaults_empty(tmp_path):
         s.add(run); s.commit(); rid = run.id
     with db.SessionLocal() as s:
         assert s.get(db.AlchemyRun, rid).sections == []
+
+
+def test_alchemy_run_has_ledger_column(tmp_path):
+    db.configure_engine(f"sqlite:///{tmp_path/'ledger.db'}")
+    db.create_all()
+    with db.SessionLocal() as s:
+        c = db.Corpus(name="c1"); s.add(c); s.flush()
+        g = db.AlchemyGoal(name="lg", corpus_id=c.id,
+                           goal_type="living-research", spec={"goal": "g"},
+                           coverage="search")
+        s.add(g); s.flush()
+        run = db.AlchemyRun(goal_id=g.id, version=1, status="pending",
+                            coverage="search",
+                            ledger={"mode": "search", "summary": "s"})
+        s.add(run); s.commit(); rid = run.id
+    with db.SessionLocal() as s:
+        assert s.get(db.AlchemyRun, rid).ledger["mode"] == "search"
+
+
+def test_alchemy_run_ledger_defaults_empty(tmp_path):
+    db.configure_engine(f"sqlite:///{tmp_path/'ledger2.db'}")
+    db.create_all()
+    with db.SessionLocal() as s:
+        c = db.Corpus(name="c1"); s.add(c); s.flush()
+        g = db.AlchemyGoal(name="lg", corpus_id=c.id,
+                           goal_type="living-research", spec={"goal": "g"},
+                           coverage="search")
+        s.add(g); s.flush()
+        run = db.AlchemyRun(goal_id=g.id, version=1, status="pending",
+                            coverage="search")
+        s.add(run); s.commit(); rid = run.id
+    with db.SessionLocal() as s:
+        assert s.get(db.AlchemyRun, rid).ledger == {}
