@@ -470,3 +470,56 @@ def test_progress_writer_suppressed_on_terminal_row(tmp_path):
     writer({"phase": "running", "section": "late"})
     with db.SessionLocal() as s:
         assert s.get(db.AlchemyRun, rid).progress == {"phase": "done"}
+
+
+def test_execute_persists_artifacts(tmp_path):
+    rid = _seed(tmp_path)
+
+    def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
+                      coverage="search", guidance=None, prior_draft=None,
+                      prior_sections=None, prior_ledger=None,
+                      on_progress=None, should_cancel=None):
+        r = FakeResult()
+        # the engine emits plain dicts (DB-free); the adapter turns them into rows
+        r.artifacts = [
+            {"kind": "digest", "key": "doc-1",
+             "payload": {"document_id": 1, "filename": "a.txt",
+                         "text": "digest one"}},
+            {"kind": "handoff", "key": "body-h1",
+             "payload": {"unit": "body", "attempt": 1, "trigger": "round_cap",
+                         "docs_covered": [1], "remaining": "more",
+                         "partial_chars": 42}},
+        ]
+        return r
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env(),
+                                         run_goal_fn=fake_run_goal)
+        run = s.get(db.AlchemyRun, rid)
+        arts = s.query(db.AlchemyArtifact).filter(
+            db.AlchemyArtifact.run_id == rid).order_by(
+            db.AlchemyArtifact.id).all()
+        assert len(arts) == 2
+        assert {a.kind for a in arts} == {"digest", "handoff"}
+        # run_id + goal_id are derived from the run/goal rows, not the payload
+        assert all(a.goal_id == run.goal_id for a in arts)
+        assert all(a.document_id is None for a in arts)   # not indexed yet
+        digest = next(a for a in arts if a.kind == "digest")
+        assert digest.payload["filename"] == "a.txt"
+
+
+def test_execute_no_artifacts_when_result_has_none(tmp_path):
+    rid = _seed(tmp_path)
+
+    def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
+                      coverage="search", guidance=None, prior_draft=None,
+                      prior_sections=None, prior_ledger=None,
+                      on_progress=None, should_cancel=None):
+        return FakeResult()   # no .artifacts attribute -> getattr-default -> none
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env(),
+                                         run_goal_fn=fake_run_goal)
+        n = s.query(db.AlchemyArtifact).filter(
+            db.AlchemyArtifact.run_id == rid).count()
+        assert n == 0

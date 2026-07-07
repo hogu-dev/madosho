@@ -80,3 +80,8 @@ class GoalRunResult:
                                                    # section (report goals only)
     ledger: dict | None = None   # CoverageLedger.to_dict() - the honest
                                  # account of corpus consultation (stage C)
+    artifacts: list = field(default_factory=list)   # stage artifacts (stage D):
+                                 # plain dicts {"kind","key","payload"}, kind in
+                                 # ("handoff","digest"). The engine emits them
+                                 # DB-free; the exec adapter writes AlchemyArtifact
+                                 # rows. Empty for stage A/B results.

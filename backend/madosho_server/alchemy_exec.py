@@ -129,6 +129,18 @@ def _section_dicts(result):
     return out
 
 
+def _artifact_dicts(result):
+    """result.artifacts entries (plain dicts the engine emits; stage D) ->
+    JSON-ready dicts. getattr-with-default keeps stage-A/B-shaped results and
+    test fakes (no artifacts attribute) working unchanged - same defensive shape
+    as _section_dicts. is_dataclass is handled too in case a future engine emits
+    a small dataclass instead of a dict."""
+    out = []
+    for a in getattr(result, "artifacts", None) or []:
+        out.append(asdict(a) if is_dataclass(a) else dict(a))
+    return out
+
+
 def execute_alchemy_run(session, alchemy_run_id: int, settings,
                         *, run_goal_fn=None) -> None:
     """Run one alchemy_run end to end. run_goal_fn defaults to the real path;
@@ -194,6 +206,16 @@ def execute_alchemy_run(session, alchemy_run_id: int, settings,
         run.stop_reason = result.stop_reason
         run.usage = _usage_dict(result.usage)
         run.ledger = getattr(result, "ledger", None) or {}
+        # Persist stage artifacts as first-class rows. run_id/goal_id come from
+        # the run and goal rows (never the payload); document_id stays None until
+        # a later stage indexes the artifact back as a generated document. These
+        # rows are added inside the same transaction as the run write-back, so a
+        # failure/rollback below drops them together with the partial run.
+        for art in _artifact_dicts(result):
+            session.add(db.AlchemyArtifact(
+                run_id=run.id, goal_id=goal.id,
+                kind=art.get("kind", ""), key=art.get("key", ""),
+                document_id=None, payload=art.get("payload") or {}))
         run.progress = {"phase": "done"}
         session.flush()  # persist before the cancel re-read
         if _is_alchemy_cancelled(session, alchemy_run_id):

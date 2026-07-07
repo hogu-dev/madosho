@@ -327,6 +327,26 @@ class AlchemyRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
 
+class AlchemyArtifact(Base):
+    """A stage artifact produced by an alchemy run - a handoff note (a unit hit
+    the round cap and a continuation resumed it) or a mining digest (one per doc
+    read under exhaustive coverage). First-class rows so a run's intermediate
+    work is inspectable, not buried in run_log. document_id is nullable and stays
+    None in stage D; it points at the generated document an artifact later becomes
+    once digest indexing (corpus memory) is turned on - deferred, same ingest-back
+    path. payload holds the kind-specific dict the engine emitted verbatim."""
+    __tablename__ = "alchemy_artifact"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("alchemy_run.id"), index=True)
+    goal_id: Mapped[int] = mapped_column(ForeignKey("alchemy_goal.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))          # handoff | digest (engine); ingest (adapter, Task 11)
+    key: Mapped[str] = mapped_column(String(200))          # stable slug within a run
+    document_id: Mapped[int | None] = mapped_column(default=None)  # generated doc, if indexed (Rung 3, later)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 # Engine/session are process globals, configured once at startup (or per test).
 engine = None
 SessionLocal = None
