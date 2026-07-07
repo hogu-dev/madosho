@@ -273,6 +273,70 @@ def test_export_no_runs_errors(fake_http, capsys):
     assert "no runs" in capsys.readouterr().err
 
 
+def _report_run(**over):
+    r = _run(version=1, status="done",
+             draft_markdown="# Vuln report\n\n## Summary\n\nAll clear.\n")
+    r["sections"] = [
+        {"key": "summary", "title": "Summary", "content": "All clear.",
+         "filled": True, "note": "",
+         "confidence": {"level": "high", "distinct_docs": 2, "citations": 3}},
+        {"key": "detail", "title": "Detail", "content": "",
+         "filled": False, "note": "skipped: llm call cap",
+         "confidence": {"level": "low", "distinct_docs": 0, "citations": 0}},
+    ]
+    r["citations"] = [{"n": 1, "document_id": 7, "citation": "doc7"}]
+    r.update(over)
+    return r
+
+
+def test_export_json_writes_structured(fake_http, tmp_path, capsys):
+    run = _report_run()
+    fake_http({
+        "/alchemy/goals/vuln_report/runs/1": run,
+        "/alchemy/goals/vuln_report/runs": [run],
+    })
+    out_file = tmp_path / "r.json"
+    rc = cli_main.main(["alchemy", "export", "vuln_report", "--run", "1",
+                        "--format", "json", "-o", str(out_file)])
+    assert rc == 0
+    doc = json.loads(out_file.read_text())
+    assert doc["title"] == "Vuln report"          # from the draft's first '# '
+    assert [s["key"] for s in doc["sections"]] == ["summary", "detail"]
+    assert doc["sections"][0]["filled"] is True
+    assert doc["sections"][0]["confidence"]["level"] == "high"
+    assert doc["sections"][1]["note"] == "skipped: llm call cap"
+    assert doc["citations"][0]["document_id"] == 7
+    assert "wrote" in capsys.readouterr().out
+
+
+def test_export_json_default_filename(fake_http, tmp_path, monkeypatch):
+    run = _report_run(version=2)
+    fake_http({
+        "/alchemy/goals/find_vuln/runs/2": run,
+        "/alchemy/goals/find_vuln/runs": [run],
+    })
+    monkeypatch.chdir(tmp_path)
+    rc = cli_main.main(["alchemy", "export", "find_vuln", "--format", "json"])
+    assert rc == 0
+    doc = json.loads((tmp_path / "find_vuln-v2.json").read_text())
+    assert doc["title"] == "Vuln report"
+
+
+def test_export_md_is_still_default(fake_http, tmp_path, capsys):
+    # no --format -> markdown, byte-for-byte the prior behavior
+    fake_http({
+        "/alchemy/goals/find_vuln/runs/1": _run(version=1, status="done",
+                                                draft_markdown="# Draft\nbody"),
+        "/alchemy/goals/find_vuln/runs": [_run(version=1, status="done")],
+    })
+    out_file = tmp_path / "r.md"
+    rc = cli_main.main(["alchemy", "export", "find_vuln", "--run", "1",
+                        "-o", str(out_file)])
+    assert rc == 0
+    assert out_file.read_text().startswith("# Draft")
+    assert "wrote" in capsys.readouterr().out
+
+
 def test_finalize(fake_http, capsys):
     fh = fake_http({
         "/alchemy/goals/find_vuln/finalize": _run(version=2, status="done",

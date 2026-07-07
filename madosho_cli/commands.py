@@ -350,11 +350,57 @@ def cmd_alchemy_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _draft_title(run: dict) -> str:
+    """The report H1, recovered from the persisted draft's first '# ' line.
+    The run JSON does not carry the compiled title on its own, but the report
+    renderer always emits it as the leading '# ' heading, so the draft is the
+    faithful source. Empty when there is no such heading (living-research)."""
+    for line in (run.get("draft_markdown") or "").splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return ""
+
+
+def _run_to_json(run: dict) -> dict:
+    """Structured JSON VIEW of a report run's persisted section results.
+
+    A faithful, mechanical echo (no LLM, no synthesis) of each section's
+    content, filled flag, confidence blob, and shortfall note, so a partial
+    export is exactly as honest as the markdown one. Built here in the CLI -
+    NOT imported from alchemy.render - because madosho_cli is a pure HTTP
+    client that must not drag the engine (alchemy -> research_agent) in on the
+    export path; the run GET already carries `sections`+`citations`, so this
+    is a local reshape of data the client holds, not a re-derivation. The
+    `citations` key is OMITTED when the run has none, so its presence is
+    meaningful."""
+    doc = {
+        "title": _draft_title(run),
+        "sections": [
+            {"key": s.get("key", ""), "title": s.get("title", ""),
+             "content": s.get("content", ""),
+             "filled": bool(s.get("filled", False)),
+             "confidence": s.get("confidence") or {},
+             "note": s.get("note", "")}
+            for s in (run.get("sections") or [])
+        ],
+    }
+    if run.get("citations") is not None:
+        doc["citations"] = run["citations"]
+    return doc
+
+
 def cmd_alchemy_export(args: argparse.Namespace) -> int:
     version = args.run or core.alchemy_latest_version(args.ref)
     if version is None:
         raise http.CliError(f"no runs for goal {args.ref}")
     run = core.alchemy_get_run(args.ref, version)
+    if args.format == "json":
+        doc = _run_to_json(run)
+        target = args.output or f"{args.ref}-v{version}.json"
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=2, ensure_ascii=True)
+        print(f"wrote {target} ({len(doc['sections'])} sections)")
+        return 0
     md = run.get("draft_markdown") or ""
     target = args.output or f"{args.ref}-v{version}.md"
     with open(target, "w", encoding="utf-8") as f:

@@ -197,10 +197,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(p)
     p.set_defaults(func=commands.cmd_alchemy_status)
 
-    p = alch_sub.add_parser("export", help="write a run's draft to a markdown file")
+    p = alch_sub.add_parser("export",
+                            help="write a run's draft to a markdown or JSON file")
     p.add_argument("ref")
     p.add_argument("--run", type=int, default=None, help="version (default: latest)")
     p.add_argument("-o", "--output", default=None)
+    p.add_argument("--format", dest="format", default="md",
+                   choices=["md", "json"],
+                   help="md = the rendered markdown draft; "
+                        "json = structured section results")
     p.set_defaults(func=commands.cmd_alchemy_export)
 
     p = alch_sub.add_parser("finalize", help="mark a version final")
