@@ -11,6 +11,7 @@ import logging
 from dataclasses import asdict, is_dataclass
 
 from madosho_server import db
+from madosho_server.llm_endpoints import endpoint_budget
 from madosho_server.tasks import _finish, _is_alchemy_cancelled
 
 logger = logging.getLogger(__name__)
@@ -156,9 +157,23 @@ def execute_alchemy_run(session, alchemy_run_id: int, settings,
     # re-consults from scratch instead of inheriting v(N-1)'s ledger.
     prior_ledger = (None if cfg.get("fresh_coverage")
                     else _prior_ledger_for(session, goal.id, run.based_on_version))
+    # Stage D: size this run's per-work-unit source budget to the model it will
+    # actually use. The endpoint registry can carry a source_chars_budget tuned
+    # to a model's real usable window (e.g. Granite 4.1 degrades above ~16k
+    # chars even though its ctx is 8192), so a small model is not handed the
+    # 100k default meant for a big-context one. Precedence: registry value wins
+    # when the row sets one, else the run config's budget_chars (default 100k).
+    # We do NOT try to honor an explicit user override above the registry: the
+    # API always sends budget_chars=100_000, so "left at default" and
+    # "explicitly 100k" are indistinguishable on the wire - there is no reliable
+    # signal to detect the override, so `registry or config` keeps the tuned
+    # per-model value in charge. This is DB access, so it lives here in the
+    # server adapter; the alchemy package stays DB-free.
+    reg_source_budget, _ctx_tokens = endpoint_budget(session, provider, model)
+    budget_chars = reg_source_budget or cfg.get("budget_chars", 100_000)
     runner = run_goal_fn or (lambda goal_type, spec, **kw: _default_run_goal(
         goal_type, spec, settings=settings, provider=provider, model=model,
-        budget_chars=cfg.get("budget_chars", 100_000),
+        budget_chars=budget_chars,
         max_rounds=cfg.get("max_rounds", 8),
         max_llm_calls=cfg.get("max_llm_calls"),
         alchemy_run_id=alchemy_run_id, **kw))

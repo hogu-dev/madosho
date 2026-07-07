@@ -412,6 +412,49 @@ def test_exec_fresh_coverage_skips_prior_ledger(tmp_path):
     assert seen["prior_ledger"] is None
 
 
+def _stand_in_capturing(got):
+    """A fixed-signature stand-in for _default_run_goal (the file's real-path
+    style, matching test_execute_real_path_wrapper_call_shape) that records the
+    derived budget_chars and returns a canned result."""
+    def stand_in(goal_type, spec, *, corpus, settings, guidance, prior_draft,
+                 provider, model, budget_chars, max_rounds, max_llm_calls,
+                 alchemy_run_id, tools=None, llm=None, should_cancel=None,
+                 coverage="search", prior_sections=None, prior_ledger=None,
+                 on_progress=None):
+        got["budget_chars"] = budget_chars
+        return FakeResult()
+    return stand_in
+
+
+def test_exec_uses_registry_source_budget(tmp_path, monkeypatch):
+    # A registry row for this run's (provider, model) carries a source budget:
+    # it overrides the run config's budget_chars (5000) because a per-model
+    # budget is the tuned value for the model actually assigned.
+    rid = _seed(tmp_path)
+    with db.SessionLocal() as s:
+        s.add(db.LlmEndpoint(name="p-m", provider="p", model="m", api_base="u",
+                             source_chars_budget=16000))
+        s.commit()
+    got = {}
+    monkeypatch.setattr(alchemy_exec, "_default_run_goal", _stand_in_capturing(got))
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env())
+        assert s.get(db.AlchemyRun, rid).status == "done"
+    assert got["budget_chars"] == 16000
+
+
+def test_exec_falls_back_to_config_budget_when_no_registry_metadata(tmp_path, monkeypatch):
+    # No matching row (or a row without a budget) -> endpoint_budget returns
+    # (None, None) and the run config's budget_chars (5000) is used.
+    rid = _seed(tmp_path)
+    got = {}
+    monkeypatch.setattr(alchemy_exec, "_default_run_goal", _stand_in_capturing(got))
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env())
+        assert s.get(db.AlchemyRun, rid).status == "done"
+    assert got["budget_chars"] == 5000
+
+
 def test_progress_writer_suppressed_on_terminal_row(tmp_path):
     """A late progress event from a cancelled run must not clobber the
     terminal row (the status-guard suppression path in
