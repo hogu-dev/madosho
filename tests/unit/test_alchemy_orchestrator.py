@@ -884,6 +884,124 @@ def test_dedupe_matches_loop_semantics():
     assert _dedupe_citations([whole, precise]) == [precise]
 
 
+# --- Stage D: handoffs continue round-capped units; artifacts emitted --------
+
+def test_report_handoff_continues_round_capped_section():
+    # budget max_rounds=1 forces the section unit to round-cap after one search
+    # round (forced synthesis), then a continuation finishes it. No call cap,
+    # so the handoff is free to spawn.
+    llm = ScriptedLlm([
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="1", name="search",
+                     arguments={"corpus": "c", "query": "q"})], usage=None),
+        AssistantTurn(text="partial\n\nCONFIDENCE: low", usage=None),   # synth
+        AssistantTurn(text="finished body\n\nCONFIDENCE: high", usage=None),  # cont
+    ])
+    result = alchemy.run_goal(
+        "report", {"template": _one_section_template()}, corpus="c",
+        tools=LedgerFakeTools(), llm=llm, budget=RunBudget(max_rounds=1))
+    # the round-capped first unit handed off; the continuation finished it
+    assert result.sections[0].content == "finished body"
+    assert result.sections[0].filled
+    assert result.stop_reason == "final"
+    # one handoff artifact for this section (key uses the section slug "one")
+    handoffs = [a for a in result.artifacts if a["kind"] == "handoff"]
+    assert len(handoffs) == 1
+    assert handoffs[0]["key"] == "one-h1"
+    assert handoffs[0]["payload"]["unit"] == "one"
+    assert handoffs[0]["payload"]["trigger"] == "round_cap"
+    assert handoffs[0]["payload"]["docs_covered"] == [1]   # search hit doc 1
+    assert handoffs[0]["payload"]["partial_chars"] > 0
+
+
+def test_living_research_handoff_continues_body():
+    llm = ScriptedLlm([
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="1", name="search",
+                     arguments={"corpus": "c", "query": "q"})], usage=None),
+        AssistantTurn(text="partial body", usage=None),        # forced synth
+        AssistantTurn(text="finished body", usage=None),       # continuation
+    ])
+    result = alchemy.run_goal(
+        "living-research", {"goal": "g"}, corpus="c",
+        tools=LedgerFakeTools(), llm=llm, budget=RunBudget(max_rounds=1))
+    assert result.markdown == "finished body"
+    assert result.stop_reason == "final"
+    handoffs = [a for a in result.artifacts if a["kind"] == "handoff"]
+    assert len(handoffs) == 1
+    assert handoffs[0]["key"] == "body-h1"
+
+
+def test_handoff_does_not_regress_prior_sections():
+    # section 1 finishes cleanly in one turn (no handoff); section 2 round-caps
+    # and a continuation finishes it. The landed first section is untouched.
+    llm = ScriptedLlm([
+        AssistantTurn(text="clean one\n\nCONFIDENCE: high", usage=None),  # sec1
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="1", name="search",
+                     arguments={"corpus": "c", "query": "q"})], usage=None),  # sec2 r1
+        AssistantTurn(text="partial two\n\nCONFIDENCE: low", usage=None),  # sec2 synth
+        AssistantTurn(text="final two\n\nCONFIDENCE: high", usage=None),   # sec2 cont
+    ])
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=LedgerFakeTools(),
+        llm=llm, budget=RunBudget(max_rounds=1))
+    assert result.sections[0].content == "clean one"      # untouched
+    assert result.sections[1].content == "final two"      # continued to done
+    assert result.stop_reason == "final"
+    handoffs = [a for a in result.artifacts if a["kind"] == "handoff"]
+    assert [h["payload"]["unit"] for h in handoffs] == ["june-incidents"]
+
+
+def test_report_no_handoff_when_finished_first_try():
+    # the stage-B happy path: units finish "final", so no handoff artifacts and
+    # no behavior change
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="secdocs", tools=FakeTools(),
+        llm=_two_section_llm(), budget=RunBudget())
+    assert result.stop_reason == "final"
+    assert result.artifacts == []
+
+
+def test_search_run_has_no_artifacts():
+    result = alchemy.run_goal(
+        "living-research", {"goal": "g"}, corpus="secdocs",
+        tools=LedgerFakeTools(), llm=_search_then_final())
+    assert result.artifacts == []
+
+
+def test_exhaustive_emits_digest_artifacts():
+    llm = ScriptedLlm([
+        AssistantTurn(text="doc1 fact for One", usage=None),   # mine doc 1
+        AssistantTurn(text="NOTHING RELEVANT", usage=None),    # mine doc 2
+        AssistantTurn(text="body\nCONFIDENCE: high", usage=None),  # section
+    ])
+    result = alchemy.run_goal("report", {"template": _one_section_template()},
+                              corpus="c", tools=ExhaustiveTools(), llm=llm,
+                              coverage="exhaustive")
+    digs = [a for a in result.artifacts if a["kind"] == "digest"]
+    # doc 1 mined a fact -> a digest artifact; doc 2 mined NOTHING RELEVANT ->
+    # empty digest, not persisted
+    assert len(digs) == 1
+    assert digs[0]["key"] == "doc-1"
+    assert digs[0]["payload"]["document_id"] == 1
+    assert digs[0]["payload"]["filename"] == "a.txt"
+    assert "doc1 fact for One" in digs[0]["payload"]["text"]
+
+
+def test_exhaustive_living_research_emits_digests():
+    llm = ScriptedLlm([
+        AssistantTurn(text="fact one", usage=None),            # mine doc 1
+        AssistantTurn(text="fact two", usage=None),            # mine doc 2
+        AssistantTurn(text="the answer", usage=None),          # the unit
+    ])
+    result = alchemy.run_goal("living-research", {"goal": "g"}, corpus="c",
+                              tools=ExhaustiveTools(), llm=llm,
+                              coverage="exhaustive")
+    digs = [a for a in result.artifacts if a["kind"] == "digest"]
+    assert {d["key"] for d in digs} == {"doc-1", "doc-2"}
+
+
 def test_call_cap_backstop_mid_unit_keeps_landed_sections():
     """The CountingLlm BACKSTOP branch (except CallCapExceeded in the unit
     loop): reachable if the loop's call pattern ever changes, so it is pinned

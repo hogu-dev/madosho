@@ -35,6 +35,16 @@ sections that received forced evidence get one metered revision call each
 (_forced_pass). `exhaustive` mines every doc BEFORE the units run instead
 (Task 6). Neither phase changes run_goal's signature or GoalRunResult's shape
 - WHY the server adapter and CLI never change when the engine deepens.
+
+Stage D adds HANDOFFS on top: a unit that stops on "round_cap" (out of round
+budget, not actually done) is continued from its own partial draft by
+_run_unit_with_handoffs, a FRESH bounded unit per continuation - research_agent
+stays frozen, a continuation is a new run with a resume prompt, never a
+re-entered loop. Both goal paths thread every unit through the helper now
+(living-research's one "body" unit, and each report section unit). Handoffs
+and the mining phase's per-doc digests both surface as plain dicts on
+GoalRunResult.artifacts (kind "handoff" / "digest") for the exec adapter to
+persist - run_goal's external shape is otherwise unchanged.
 """
 from __future__ import annotations
 
@@ -251,6 +261,25 @@ def _mine_corpus(ledger, sections, *, goal: str, tools, counting, budget,
     return digests, citations
 
 
+def _digest_artifacts(digests: dict, corpus_docs: dict | None) -> list[dict]:
+    """Turn the mining phase's per-doc digests into 'digest' artifact dicts
+    (stage D). The SAME digests already feed the prompt block; emitting them as
+    artifacts too lets the exec adapter persist them as inspectable rows -
+    corpus memory the run built, with indexing deferred. One dict per doc that
+    actually produced findings; a doc mined to nothing carries no memory worth
+    persisting (the ledger already records the read), so it is skipped."""
+    out: list[dict] = []
+    for doc_id in sorted(digests):
+        text = (digests[doc_id] or "").strip()
+        if not text:
+            continue
+        out.append({"kind": "digest", "key": f"doc-{doc_id}",
+                    "payload": {"document_id": doc_id,
+                                "filename": (corpus_docs or {}).get(doc_id) or "",
+                                "text": text}})
+    return out
+
+
 def _remaining_text(ledger) -> str:
     """The work-still-outstanding line a continuation is told to tackle:
     the corpus documents the run has not consulted yet (the ledger's own
@@ -368,6 +397,7 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
              prior_sections: list | None = None,
              prior_ledger: dict | None = None,
              max_llm_calls: int | None = None,
+             max_handoffs: int = _MAX_HANDOFFS,
              should_cancel=None, on_progress=None) -> GoalRunResult:
     compiled = compile_spec(goal_type, spec)
     if coverage not in COVERAGE_MODES:
@@ -388,11 +418,14 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
                            guidance=guidance,
                            prior_sections=prior_sections or [],
                            max_llm_calls=max_llm_calls,
+                           max_handoffs=max_handoffs,
                            should_cancel=should_cancel,
                            on_progress=on_progress)
     # living-research: the stage-A single-unit path, deepened by coverage
     digests_text = None
     extra_citations: list = []
+    artifacts: list = []   # stage-D stage artifacts (digests + handoffs) folded
+                           # into GoalRunResult.artifacts for the exec adapter
     if coverage == "exhaustive":
         budget = budget if budget is not None else research_agent.RunBudget()
         digests, mined_cits = _mine_corpus(
@@ -403,6 +436,7 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
             on_progress=on_progress)
         extra_citations.extend(mined_cits)
         digests_text = _digests_block(digests, ledger.corpus_docs) or None
+        artifacts.extend(_digest_artifacts(digests, ledger.corpus_docs))
     prompt = compose_prompt(compiled, corpus=corpus, guidance=guidance,
                             prior_draft=prior_draft, digests_text=digests_text)
     if max_llm_calls is not None:
@@ -411,9 +445,20 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
         remaining = max(0, max_llm_calls - counting.usage.llm_calls)
         budget = replace(budget, max_rounds=min(budget.max_rounds,
                                                 max(0, remaining - 1)))
-    report = research_agent.run(prompt, tools=tools, llm=counting,
-                                budget=budget, should_cancel=should_cancel)
-    ledger.mark_citations(report.citations, "search")
+
+    def _body_continuation(partial, docs_covered, remaining):
+        # the whole living-research draft is one unit ("body"); a continuation
+        # resumes the whole thing, so section=None (no per-section scoping)
+        return compose_continuation_prompt(
+            compiled.goal, corpus=corpus, partial=partial,
+            docs_covered=docs_covered, remaining=remaining, section=None,
+            guidance=guidance)
+
+    report, handoffs = _run_unit_with_handoffs(
+        prompt, tools=tools, llm=counting, budget=budget, autonomous_md=None,
+        should_cancel=should_cancel, unit_key="body", ledger=ledger,
+        max_handoffs=max_handoffs, compose_continuation=_body_continuation)
+    artifacts.extend(handoffs)
     markdown, stop, citations = (report.markdown, report.stop_reason,
                                  extra_citations + list(report.citations))
     if coverage == "full" and stop not in ("cancelled",):
@@ -432,7 +477,8 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
             stop = forced_halt
     return GoalRunResult(markdown=markdown, citations=_dedupe_citations(citations),
                          run_log=list(report.run_log), stop_reason=stop,
-                         usage=counting.usage, ledger=ledger.to_dict())
+                         usage=counting.usage, ledger=ledger.to_dict(),
+                         artifacts=artifacts)
 
 
 def _dedupe_citations(cits: list) -> list:
@@ -513,7 +559,7 @@ def _carry_prior(res: SectionResult, prior: dict | None, shortfall: str) -> None
 
 
 def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
-                ledger, guidance, prior_sections, max_llm_calls,
+                ledger, guidance, prior_sections, max_llm_calls, max_handoffs,
                 should_cancel, on_progress):
     # keep the FULL prior dicts (content + confidence), not just content: a
     # section that ends unfilled carries the prior's content and confidence
@@ -526,6 +572,7 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
                                      # forced-pass re-grade counts only the
                                      # section's own evidence, never the sweep
     run_log: list[dict] = []
+    artifacts: list = []   # stage-D stage artifacts (digests + handoffs)
     halted: str | None = None   # run-level early-stop reason, once set
     # run-level round_cap bubbles up ONLY from a unit that BOTH ran out of
     # rounds AND produced nothing (a section its own unit filled - even via
@@ -548,6 +595,7 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
             on_progress=on_progress)
         citations.extend(mined_cits)
         digests_text = _digests_block(digests, ledger.corpus_docs) or None
+        artifacts.extend(_digest_artifacts(digests, ledger.corpus_docs))
 
     for i, (section, res) in enumerate(zip(compiled.sections, results)):
         if halted is None and should_cancel is not None and should_cancel():
@@ -581,11 +629,23 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
             prior_content=(prior or {}).get("content"),
             digests_text=digests_text)
         calls_before = counting.usage.llm_calls
+
+        def _section_continuation(partial, docs_covered, remaining,
+                                  _section=section):
+            # bind the section via a default arg: this closure outlives the
+            # loop iteration, and late binding would otherwise capture the LAST
+            # section for every continuation
+            return compose_continuation_prompt(
+                compiled.goal, corpus=corpus, partial=partial,
+                docs_covered=docs_covered, remaining=remaining,
+                section=_section, guidance=guidance)
+
         try:
-            unit = research_agent.run(prompt, tools=tools, llm=counting,
-                                      budget=unit_budget,
-                                      autonomous_md=report_md,
-                                      should_cancel=should_cancel)
+            unit, unit_handoffs = _run_unit_with_handoffs(
+                prompt, tools=tools, llm=counting, budget=unit_budget,
+                autonomous_md=report_md, should_cancel=should_cancel,
+                unit_key=section.key, ledger=ledger, max_handoffs=max_handoffs,
+                compose_continuation=_section_continuation)
         except CallCapExceeded:
             # backstop tripped mid-unit: the unit's partial context dies but
             # every previously landed section survives - the whole point of
@@ -607,6 +667,7 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
             halted = "failed"
             _carry_prior(res, prior, _SHORTFALL["failed"])
             continue
+        artifacts.extend(unit_handoffs)
         res.llm_calls = counting.usage.llm_calls - calls_before
         res.stop_reason = unit.stop_reason
         for entry in unit.run_log:
@@ -620,7 +681,6 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
         res.confidence = blend_confidence(grade, unit.citations)
         own_cits[res.key] = list(unit.citations)
         citations.extend(unit.citations)
-        ledger.mark_citations(unit.citations, "search")
         if content.strip():
             res.content = content
             res.filled = True
@@ -667,4 +727,4 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
                          citations=_dedupe_citations(citations),
                          run_log=run_log, stop_reason=stop,
                          usage=counting.usage, sections=results,
-                         ledger=ledger.to_dict())
+                         ledger=ledger.to_dict(), artifacts=artifacts)
