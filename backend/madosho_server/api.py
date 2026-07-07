@@ -1241,7 +1241,8 @@ def _ingest_bytes(
         enqueue: Callable, enqueue_build: Callable, *,
         content: bytes, filename: str, mimetype: str, corpus_id: int | None,
         parser: str | None, chunker: str | None, embedder: str | None,
-        name: str | None, options: dict | None) -> db.Document:
+        name: str | None, options: dict | None,
+        origin: str = "source", origin_meta: dict | None = None) -> db.Document:
     """Store bytes by SHA-256, find-or-create the library document, create or
     reuse a named pipeline from the recipe, optionally attach a corpus
     membership, and return the document. Caller must commit.
@@ -1272,6 +1273,9 @@ def _ingest_bytes(
 
     existing = session.scalar(
         select(db.Document).where(db.Document.content_hash == digest))
+    # NOTE: origin is stamped only on FIRST creation below. An identical-bytes
+    # re-ingest lands here and keeps the existing row's origin as-is
+    # (first-writer-wins) - the same bytes are the same artifact.
     if existing is not None:
         before = session.scalar(select(db.Pipeline).where(
             db.Pipeline.document_id == existing.id, db.Pipeline.name == pname))
@@ -1285,7 +1289,8 @@ def _ingest_bytes(
         return existing
 
     doc = db.Document(filename=filename, content_hash=digest, file_uri=uri,
-                      mimetype=mimetype, status="received")
+                      mimetype=mimetype, status="received",
+                      origin=origin, origin_meta=origin_meta or {})
     session.add(doc)
     try:
         session.flush()                          # assign doc.id inside the txn

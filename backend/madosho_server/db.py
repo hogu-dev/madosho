@@ -46,10 +46,24 @@ class Document(Base):
     # Pipeline.document_id and break create_all() on SQLite. Integrity is enforced
     # in application code (pipelines.effective_pipeline ignores stale/non-indexed ids).
     selected_pipeline_id: Mapped[int | None] = mapped_column(default=None)
+    # Provenance (stage D). "source" = a user/library upload; "generated" = a
+    # draft an alchemy run wrote and ingested back. origin_meta carries
+    # {goal, version, run_id} for a generated doc so the label can name it.
+    # Stamped ONCE at row creation (see api._ingest_bytes); never mutated on a
+    # dedupe hit (first-writer-wins).
+    origin: Mapped[str] = mapped_column(String(16), default="source")
+    origin_meta: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)
     # Liveness signal for the stalled-job sweeper: updated by the progress reporter
     # on every write, so a live job is never swept; a SIGKILLed job stops writing,
     # this freezes, and the sweeper fails it past ceiling + grace.
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    @property
+    def origin_label(self) -> str:
+        """The provenance suffix for this document ('' for source docs)."""
+        # Lazy import keeps db.py import-light and dependency-free at module load.
+        from madosho_server.provenance import origin_label as _label
+        return _label(self.origin, self.origin_meta)
 
 
 class Pipeline(Base):
@@ -430,6 +444,14 @@ def _ensure_added_columns() -> None:
         conn.execute(text(
             "ALTER TABLE pipeline ADD COLUMN IF NOT EXISTS "
             "updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now()"))
+        # Provenance columns (stage D). ADD COLUMN IF NOT EXISTS migrates a
+        # deployed Postgres in place; SQLite dev DBs get them via create_all.
+        conn.execute(text(
+            "ALTER TABLE document ADD COLUMN IF NOT EXISTS "
+            "origin VARCHAR(16) NOT NULL DEFAULT 'source'"))
+        conn.execute(text(
+            "ALTER TABLE document ADD COLUMN IF NOT EXISTS "
+            "origin_meta JSONB NOT NULL DEFAULT '{}'::jsonb"))
         conn.execute(text(
             "ALTER TABLE alchemy_run ADD COLUMN IF NOT EXISTS "
             "sections JSONB NOT NULL DEFAULT '[]'::jsonb"))
