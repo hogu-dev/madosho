@@ -78,7 +78,7 @@ def _weak_sections(results: list, cap: int = _WEAK_SECTION_CAP) -> list:
 
 
 def _forced_pass(ledger, weak: list, *, goal: str, tools, counting,
-                 max_llm_calls, should_cancel, on_progress):
+                 max_llm_calls, should_cancel, on_progress, own_cits=None):
     """Enforce `full` coverage: system-side search-doc over every untouched
     doc (zero LLM calls - the model cannot skip docs by not searching), then
     one metered revision call per weak section that evidence came back for.
@@ -144,10 +144,16 @@ def _forced_pass(ledger, weak: list, *, goal: str, tools, counting,
             res.content = content
             res.filled = True
             res.note = ""
-            # revised with forced evidence: re-blend from the forced
-            # citations (per-section attribution of forced hits is not
-            # tracked; the pass-level citations are the honest basis)
-            res.confidence = blend_confidence(grade, new_citations)
+            # Re-grade from ONLY this section's own citations, never the
+            # corpus-wide forced pool: the sweep hands every weak section the
+            # same shared evidence block with no per-section attribution, so
+            # crediting a section with docs the sweep merely touched would
+            # inflate its distinct-doc count and let a 1-doc section read
+            # "high". Same invariant the mining path holds (see _mine_corpus).
+            # A section with no own citations honestly floors at "low"; the
+            # run-level coverage verdict is applied later, once, by the caller.
+            res.confidence = blend_confidence(
+                grade, (own_cits or {}).get(res.key, []))
     return new_citations, None
 
 
@@ -303,7 +309,8 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
         forced_cits, forced_halt = _forced_pass(
             ledger, [body], goal=compiled.goal, tools=tools,
             counting=counting, max_llm_calls=max_llm_calls,
-            should_cancel=should_cancel, on_progress=on_progress)
+            should_cancel=should_cancel, on_progress=on_progress,
+            own_cits={"body": list(report.citations)})
         citations.extend(forced_cits)
         markdown = body.content
         if forced_halt is not None:
@@ -321,7 +328,7 @@ def _dedupe_citations(cits: list) -> list:
     better-attributed occurrence. Duplicated rather than imported: the loop's
     helper is private and the research lane is frozen."""
     seen: set = set()
-    seen_quotes: set = set()
+    seen_quotes: dict = {}   # qkey -> index in `out` of the kept occurrence
     out = []
     for c in cits:
         key = (c.document_id, c.pipeline_id, c.position)
@@ -333,8 +340,18 @@ def _dedupe_citations(cits: list) -> list:
         if c.document_id is not None and c.quote:
             qkey = (c.document_id, c.quote)
             if qkey in seen_quotes:
+                # Same passage already kept via another tool; keep the
+                # better-attributed one. A precise search hit (real position)
+                # beats a whole-text read (position=None), which the mining
+                # phase appends FIRST - without this swap the reader would get
+                # the generic "document N (whole text)" entry and lose the
+                # section's exact citation, leaving a dangling body marker.
+                idx = seen_quotes[qkey]
+                if out[idx].position is None and c.position is not None:
+                    out[idx] = c
+                    seen.add(key)
                 continue
-            seen_quotes.add(qkey)
+            seen_quotes[qkey] = len(out)
         seen.add(key)
         out.append(c)
     return out
@@ -390,6 +407,9 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
     results = [SectionResult(key=s.key, title=s.title)
                for s in compiled.sections]
     citations: list = []
+    own_cits: dict[str, list] = {}   # section key -> its OWN citations, so a
+                                     # forced-pass re-grade counts only the
+                                     # section's own evidence, never the sweep
     run_log: list[dict] = []
     halted: str | None = None   # run-level early-stop reason, once set
     # run-level round_cap bubbles up ONLY from a unit that BOTH ran out of
@@ -483,6 +503,7 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
             continue
         content, grade = split_grade_marker(unit.markdown or "")
         res.confidence = blend_confidence(grade, unit.citations)
+        own_cits[res.key] = list(unit.citations)
         citations.extend(unit.citations)
         ledger.mark_citations(unit.citations, "search")
         if content.strip():
@@ -500,7 +521,8 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
         forced_cits, forced_halt = _forced_pass(
             ledger, _weak_sections(results), goal=compiled.goal, tools=tools,
             counting=counting, max_llm_calls=max_llm_calls,
-            should_cancel=should_cancel, on_progress=on_progress)
+            should_cancel=should_cancel, on_progress=on_progress,
+            own_cits=own_cits)
         citations.extend(forced_cits)
         if forced_halt is not None:
             halted = forced_halt

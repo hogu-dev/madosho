@@ -115,16 +115,26 @@ def compose_coverage_query(sections, goal: str) -> str:
     phrased from the weakest sections' headings and instructions. Capped at
     300 chars - retrieval queries degrade past that, and the sections' first
     words carry the topical signal. Falls back to the goal when nothing is
-    weak (the pass then only proves consultation, it rarely changes text).
+    weak, or when the weak sections carry no topical signal (e.g. living-
+    research's untitled "body" section) - the pass then only proves
+    consultation, it rarely changes text.
 
     Duck-typed over BOTH Section (has .instruction) and SectionResult (has
     only .title/.key) - the orchestrator hands weak SectionResults here, so
     .instruction is read defensively via getattr."""
     parts = []
     for s in sections:
-        label = getattr(s, "title", "") or getattr(s, "key", "")
-        instr = getattr(s, "instruction", "")
-        parts.append(f"{label}: {instr}".rstrip(": ").rstrip())
+        # Topical signal only: a section's heading and instruction. The bare
+        # structural key ("body" for living-research) is NOT topical - a
+        # section with neither a title nor an instruction contributes nothing,
+        # so the query falls back to the goal. Without this a living-research
+        # `full` pass searched every doc for the literal word "body", making
+        # the forced sweep topically random.
+        title = getattr(s, "title", "") or ""
+        instr = getattr(s, "instruction", "") or ""
+        piece = f"{title}: {instr}".strip().strip(":").strip()
+        if piece:
+            parts.append(piece)
     return ("; ".join(parts)[:300]) if parts else goal[:300]
 
 

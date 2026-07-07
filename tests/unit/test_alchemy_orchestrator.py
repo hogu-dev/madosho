@@ -627,6 +627,42 @@ def test_full_coverage_demotes_genuine_high_not_just_low_doc_ceiling():
     assert result.sections[0].confidence["level"] == "medium"
 
 
+class FullCoverageThreeDocsTools(FullCoverageTools):
+    """3 docs; the unit's search hits ONLY doc 1, so the section's OWN
+    evidence is a single doc (medium ceiling). The forced sweep then
+    successfully consults docs 2 AND 3, completing coverage. If the forced
+    re-grade credited the section with the sweep's two docs it would read
+    "high" - the honest re-grade must keep it at its own 1-doc basis."""
+    def __init__(self):
+        super().__init__(docs=[
+            {"id": 1, "filename": "a.txt", "status": "indexed"},
+            {"id": 2, "filename": "b.txt", "status": "indexed"},
+            {"id": 3, "filename": "c.txt", "status": "indexed"}])
+
+
+def test_forced_pass_regrades_from_own_evidence_not_the_sweep():
+    # unit cites doc 1 only; the forced sweep touches docs 2 and 3 and coverage
+    # COMPLETES. The section must NOT inflate to "high" off docs it never itself
+    # cited - the sweep's evidence is shared and unattributed, so the honest
+    # basis is the section's own single doc (ceiling "medium").
+    llm = ScriptedLlm([
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="1", name="search",
+                     arguments={"corpus": "c", "query": "q"})], usage=None),
+        AssistantTurn(text="body\nCONFIDENCE: high", usage=None),
+        AssistantTurn(text="revised body\nCONFIDENCE: high", usage=None),
+    ])
+    result = alchemy.run_goal(
+        "report", {"template": _one_section_template()}, corpus="c",
+        tools=FullCoverageThreeDocsTools(), llm=llm, coverage="full")
+    assert result.sections[0].content == "revised body"   # revision did happen
+    assert result.ledger["complete"] is True              # docs 2 and 3 swept
+    assert result.sections[0].confidence["coverage_complete"] is True
+    # the honest basis is the section's OWN one doc, not the sweep's three
+    assert result.sections[0].confidence["distinct_docs"] == 1
+    assert result.sections[0].confidence["level"] == "medium"
+
+
 def test_full_coverage_respects_call_cap():
     # cap = 2: the single section unit gets both calls (quota floor), leaving
     # nothing for the revision - forced RETRIEVAL still happens (free), the
@@ -839,6 +875,13 @@ def test_dedupe_matches_loop_semantics():
     c = cit(1, 2, 0, "q0")
     d = cit(1, 2, 1, "q1")
     assert _dedupe_citations([c, d]) == [c, d]
+    # better-attributed wins regardless of order: mining appends the whole-text
+    # read (position=None) FIRST, then a section cites the same passage
+    # precisely. The precise citation must win, else the body's marker points
+    # at a dropped citation and the reader only sees "document N (whole text)".
+    whole = cit(1, 9, None, "same text")
+    precise = cit(1, 2, 0, "same text")
+    assert _dedupe_citations([whole, precise]) == [precise]
 
 
 def test_call_cap_backstop_mid_unit_keeps_landed_sections():

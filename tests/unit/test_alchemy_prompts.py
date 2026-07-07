@@ -86,6 +86,17 @@ def test_coverage_query_falls_back_to_goal():
     assert q == "overall goal text"
 
 
+def test_coverage_query_falls_back_when_section_has_no_topical_signal():
+    # living-research hands _forced_pass a bare structural section (key="body",
+    # no title, no instruction). Its key is NOT topical, so the query must fall
+    # back to the goal - not degenerate to the literal string "body", which
+    # would make the forced sweep search every doc for a meaningless word.
+    from alchemy.types import SectionResult
+    body = SectionResult(key="body", content="draft")
+    q = compose_coverage_query([body], goal="what causes X in Y")
+    assert q == "what causes X in Y"
+
+
 def test_forced_revision_prompt_carries_evidence_and_current_text():
     p = compose_forced_revision_prompt(
         "the goal", "Findings", "current body",
