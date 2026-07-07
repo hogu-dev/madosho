@@ -139,6 +139,15 @@ class LlmEndpoint(Base):
     # "responses" (OpenAI's newer Responses API). Some frontier-model proxies
     # only handle multimodal input on the responses surface.
     api_flavor: Mapped[str] = mapped_column(String(16), default="chat")
+    # Per-model context metadata (stage D). Both nullable/optional: a row that
+    # does not set them behaves exactly as before. source_chars_budget is the
+    # max source characters a work unit should feed THIS model (its real usable
+    # window, e.g. Granite 4.1 chokes above ~16k chars even though ctx is 8192);
+    # context_window_tokens is the raw ctx for display/future sizing. The
+    # alchemy adapter reads source_chars_budget via endpoint_budget() to size a
+    # run's budget to the model actually assigned.
+    context_window_tokens: Mapped[int | None] = mapped_column(default=None)
+    source_chars_budget: Mapped[int | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now())
 
@@ -371,6 +380,16 @@ def _ensure_added_columns() -> None:
         conn.execute(text(
             "ALTER TABLE llm_endpoint ADD COLUMN IF NOT EXISTS "
             "api_flavor VARCHAR(16) NOT NULL DEFAULT 'chat'"))
+        # Stage D per-model budget metadata. Nullable with no default: an
+        # existing row simply has NULL until an operator fills it in on the
+        # Settings page, and NULL means "no per-model budget -> fall back to the
+        # run config" in endpoint_budget()/alchemy_exec.
+        conn.execute(text(
+            "ALTER TABLE llm_endpoint ADD COLUMN IF NOT EXISTS "
+            "context_window_tokens INTEGER"))
+        conn.execute(text(
+            "ALTER TABLE llm_endpoint ADD COLUMN IF NOT EXISTS "
+            "source_chars_budget INTEGER"))
         conn.execute(text(
             "ALTER TABLE document_corpus ADD COLUMN IF NOT EXISTS pipeline_id INTEGER"))
         # Carry existing single pins forward into the multi-select table (idempotent):

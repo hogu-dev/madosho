@@ -220,3 +220,42 @@ def test_seed_name_matches_endpoint_name_pattern():
             supports_text=True,
             supports_vision=True
         )
+
+
+def test_endpoint_budget_resolves_metadata(session):
+    session.add(db.LlmEndpoint(name="granite", provider="openai",
+                               model="granite-4", api_base="u",
+                               source_chars_budget=16000,
+                               context_window_tokens=8192))
+    session.commit()
+    # (source_chars_budget, context_window_tokens) - budget first, matching the
+    # order alchemy_exec unpacks (it only needs the source budget).
+    assert llm_endpoints.endpoint_budget(session, "openai", "granite-4") == (16000, 8192)
+
+
+def test_endpoint_budget_none_when_row_has_no_metadata(session):
+    session.add(db.LlmEndpoint(name="plain", provider="openai", model="m",
+                               api_base="u"))
+    session.commit()
+    assert llm_endpoints.endpoint_budget(session, "openai", "m") == (None, None)
+
+
+def test_endpoint_budget_unknown_provider_model_returns_none(session):
+    session.add(db.LlmEndpoint(name="plain", provider="openai", model="m",
+                               api_base="u", source_chars_budget=9000))
+    session.commit()
+    # no row matches -> (None, None), never a partial/other-row value.
+    assert llm_endpoints.endpoint_budget(session, "nope", "nope") == (None, None)
+
+
+def test_endpoint_budget_prefers_default_row_when_multiple_match(session):
+    # Two rows share (provider, model); the default one wins so the budget
+    # tracks the endpoint a run would actually resolve to.
+    session.add_all([
+        db.LlmEndpoint(name="a", provider="openai", model="m", api_base="u",
+                       source_chars_budget=1000, is_default=False),
+        db.LlmEndpoint(name="b", provider="openai", model="m", api_base="u",
+                       source_chars_budget=2000, is_default=True),
+    ])
+    session.commit()
+    assert llm_endpoints.endpoint_budget(session, "openai", "m") == (2000, None)

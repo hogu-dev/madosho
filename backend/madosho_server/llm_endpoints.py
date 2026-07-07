@@ -43,6 +43,28 @@ def resolve_llm(session, settings, endpoint: "db.LlmEndpoint | None" = None):
     return _call, row
 
 
+def endpoint_budget(session, provider: str, model: str) -> tuple[int | None, int | None]:
+    """(source_chars_budget, context_window_tokens) for the registry row that
+    matches this provider+model, or (None, None) if no row / no metadata. The
+    alchemy path selects by (provider, model), not by name/default, because a
+    run stores a bare {provider, model} dict, never an endpoint id.
+
+    When several rows share the same (provider, model), the default row wins
+    (is_default DESC) so the budget tracks the endpoint a run would resolve to;
+    ties break by id (the first-created row). Returns the source budget FIRST
+    because that is the only value the alchemy adapter needs to size a run."""
+    rows = session.scalars(
+        select(db.LlmEndpoint)
+        .where(db.LlmEndpoint.provider == provider,
+               db.LlmEndpoint.model == model)
+        .order_by(db.LlmEndpoint.is_default.desc(), db.LlmEndpoint.id)
+    ).all()
+    if not rows:
+        return (None, None)
+    row = rows[0]
+    return (row.source_chars_budget, row.context_window_tokens)
+
+
 def resolve_vision_endpoint(session, settings):
     """Return (provider, model, bound_settings, api_flavor) for the default VISION
     endpoint, or None when no vision-capable default exists. bound_settings carries
