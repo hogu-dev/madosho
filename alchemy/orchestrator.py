@@ -383,10 +383,11 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
     round_cap_empty = False
 
     digests_text = None
-    mined_cits: list = []   # folded into every section's confidence blend
-                            # below - a section that relied on injected
-                            # digests (no tool call of its own) must still
-                            # get credit for the docs the mining phase read
+    mined_cits: list = []   # corpus-wide citations from the mining phase;
+                            # added to the RUN-LEVEL citations list only -
+                            # never folded into a per-section confidence
+                            # blend (that would credit every section with
+                            # docs it never itself cited)
     if coverage == "exhaustive":
         reserve = (_MIN_UNIT_CALLS * len(compiled.sections)
                    if max_llm_calls is not None else 0)
@@ -466,11 +467,7 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
             _carry_prior(res, prior, _SHORTFALL["cancelled"])
             continue
         content, grade = split_grade_marker(unit.markdown or "")
-        # exhaustive mode's digests rode in the prompt as TEXT, not tool
-        # calls, so unit.citations alone would blind the blend to whatever
-        # the mining phase already read; mined_cits is [] outside exhaustive
-        # mode, so this is a no-op there (identical to stage-B behavior)
-        res.confidence = blend_confidence(grade, unit.citations + mined_cits)
+        res.confidence = blend_confidence(grade, unit.citations)
         citations.extend(unit.citations)
         ledger.mark_citations(unit.citations, "search")
         if content.strip():

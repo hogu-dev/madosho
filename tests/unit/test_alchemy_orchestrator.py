@@ -710,6 +710,12 @@ def test_exhaustive_get_doc_failure_is_honest():
 
     llm = ScriptedLlm([
         AssistantTurn(text="doc1 fact", usage=None),
+        # section unit consults doc 1 itself via search, so its own
+        # confidence blend has a citation to work with (not folded-in
+        # corpus-wide mining credit)
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="1", name="search",
+                     arguments={"corpus": "c", "query": "q"})], usage=None),
         AssistantTurn(text="body\nCONFIDENCE: high", usage=None),
     ])
     result = alchemy.run_goal("report", {"template": _one_section_template()},
@@ -718,6 +724,7 @@ def test_exhaustive_get_doc_failure_is_honest():
     assert result.ledger["failures"]["2"].startswith("no pipeline")
     assert result.ledger["complete"] is False
     assert result.sections[0].confidence["level"] == "medium"
+    assert result.sections[0].confidence["coverage_complete"] is False
 
 
 def test_exhaustive_union_skips_docs_already_read():
