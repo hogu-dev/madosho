@@ -627,7 +627,7 @@ class AlchemyGoalCreate(BaseModel):
     corpus_id: int
     goal_type: str = Field(default="living-research")
     spec: dict
-    coverage: str = Field(default="search", pattern="^(search)$")  # stage A: search only
+    coverage: str = Field(default="search", pattern="^(search|full|exhaustive)$")
 
 
 class AlchemyGoalRead(BaseModel):
@@ -641,9 +641,10 @@ class AlchemyGoalRead(BaseModel):
 
 
 class AlchemyRunLaunch(BaseModel):
-    coverage: str | None = Field(default=None, pattern="^(search)$")  # defaults to the goal's coverage
+    coverage: str | None = Field(default=None, pattern="^(search|full|exhaustive)$")  # defaults to the goal's coverage
     guidance: str | None = None
     based_on_version: int | None = None
+    fresh_coverage: bool = False                # rerun re-consults from scratch instead of inheriting the chain's ledger union
     llm: dict                                   # {provider, model}
     budget_chars: int = 100_000
     max_rounds: int = 8
@@ -2088,7 +2089,9 @@ def start_alchemy_run(ref: str, body: AlchemyRunLaunch, session: SessionDep,
         based_on_version=prior_draft_version,
         progress={"phase": "pending"},
         config={"llm": body.llm, "budget_chars": body.budget_chars,
-                "max_rounds": body.max_rounds, "max_llm_calls": body.max_llm_calls})
+                "max_rounds": body.max_rounds,
+                "max_llm_calls": body.max_llm_calls,
+                "fresh_coverage": body.fresh_coverage})
     session.add(run)
     session.flush()
     enqueue(session, run.id)

@@ -161,14 +161,15 @@ def test_run_rejects_zero_max_llm_calls_422(tmp_path):
 
 
 def test_run_rejects_unsupported_coverage_422(tmp_path):
-    """coverage="exhaustive" is not a stage-A value; the run launch body must
-    reject it the same way AlchemyGoalCreate.coverage does."""
+    """Stage C opens run-launch coverage to search|full|exhaustive; only a
+    value outside that set is rejected, the same way AlchemyGoalCreate.coverage
+    rejects it."""
     client, _ = _client(tmp_path)
     cid = _corpus(client)
     _create_goal(client, cid)
     r = client.post("/alchemy/goals/find_vuln/runs",
                     json={"llm": {"provider": "openai", "model": "m"},
-                          "coverage": "exhaustive"})
+                          "coverage": "vibes"})
     assert r.status_code == 422
 
 
@@ -374,3 +375,44 @@ def test_run_detail_exposes_ledger(tmp_path):
     # the list view stays light - no ledger there
     listed = client.get("/alchemy/goals/find_vuln/runs").json()
     assert "ledger" not in listed[0]
+
+
+def test_goal_accepts_full_and_exhaustive_coverage(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    for cov in ("full", "exhaustive"):
+        r = _create_goal(client, cid, name=f"covgoal-{cov}", coverage=cov)
+        assert r.status_code == 201, r.text
+        assert r.json()["coverage"] == cov
+
+
+def test_goal_rejects_unknown_coverage(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    r = _create_goal(client, cid, name="badcov", coverage="vibes")
+    assert r.status_code == 422
+
+
+def test_run_launch_accepts_coverage_and_fresh_flag(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    r = client.post("/alchemy/goals/find_vuln/runs", json={
+        "llm": {"provider": "openai", "model": "m"}, "coverage": "full",
+        "fresh_coverage": True})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["coverage"] == "full"
+    # the flag rides in config for the worker
+    with db.SessionLocal() as s:
+        run = s.get(db.AlchemyRun, body["id"])
+        assert run.config["fresh_coverage"] is True
+
+
+def test_run_launch_rejects_unknown_coverage(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    r = client.post("/alchemy/goals/find_vuln/runs", json={
+        "llm": {"provider": "openai", "model": "m"}, "coverage": "vibes"})
+    assert r.status_code == 422
