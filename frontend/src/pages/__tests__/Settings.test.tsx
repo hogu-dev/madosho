@@ -21,7 +21,7 @@ it("lists endpoints with the default marked", async () => {
     { id: 1, name: "gemma4-local", provider: "openai", model: "gemma-4-e4b",
       api_base: "http://h:8081/v1", key_env_var: null, is_default: true, key_present: false,
       supports_text: true, supports_vision: false, is_vision_default: false,
-      api_flavor: "chat" },
+      api_flavor: "chat", context_window_tokens: null, source_chars_budget: null },
   ]);
   render(<Settings />);
   expect(await screen.findByText("gemma4-local")).toBeInTheDocument();
@@ -48,7 +48,7 @@ it("shows a warning when no endpoint supports vision", async () => {
     { id: 1, name: "t", provider: "openai", model: "m", api_base: "u",
       key_env_var: null, is_default: true, key_present: false,
       supports_text: true, supports_vision: false, is_vision_default: false,
-      api_flavor: "chat" },
+      api_flavor: "chat", context_window_tokens: null, source_chars_budget: null },
   ]);
   render(<Settings />);
   expect(await screen.findByText(/no vision endpoint/i)).toBeInTheDocument();
@@ -73,7 +73,7 @@ it("shows a responses API chip on responses-flavor endpoints", async () => {
     { id: 4, name: "relay-endpoint", provider: "openai", model: "gpt-5", api_base: "u",
       key_env_var: null, is_default: true, key_present: false,
       supports_text: true, supports_vision: true, is_vision_default: true,
-      api_flavor: "responses" },
+      api_flavor: "responses", context_window_tokens: null, source_chars_budget: null },
   ]);
   render(<Settings />);
   expect(await screen.findByText(/responses API/i)).toBeInTheDocument();
@@ -84,7 +84,7 @@ it("calls setVisionDefaultLlmEndpoint when Make vision default is clicked", asyn
     { id: 2, name: "v", provider: "openai", model: "gemma-4-e4b", api_base: "u",
       key_env_var: null, is_default: true, key_present: false,
       supports_text: true, supports_vision: true, is_vision_default: false,
-      api_flavor: "chat" },
+      api_flavor: "chat", context_window_tokens: null, source_chars_budget: null },
   ]);
   vi.mocked(api.setVisionDefaultLlmEndpoint).mockResolvedValue({} as never);
   render(<Settings />);

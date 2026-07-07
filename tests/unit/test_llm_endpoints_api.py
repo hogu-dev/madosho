@@ -23,7 +23,8 @@ def test_crud_and_set_default(client, monkeypatch):
     assert set(first.keys()) == {"id", "name", "provider", "model", "api_base",
                                  "key_env_var", "is_default", "key_present",
                                  "supports_text", "supports_vision", "is_vision_default",
-                                 "api_flavor"}
+                                 "api_flavor", "context_window_tokens",
+                                 "source_chars_budget"}
     assert first["api_flavor"] == "chat"        # default when unspecified
 
     r2 = client.post("/llm-endpoints", json={"name": "qwen", "provider": "openai",
@@ -165,3 +166,41 @@ def test_update_clears_default_when_text_removed(client):
     upd = client.put(f"/llm-endpoints/{a['id']}", json={"name": "a", "provider": "o",
         "model": "m", "api_base": "u", "supports_text": False, "supports_vision": True}).json()
     assert upd["is_default"] is False
+
+
+def test_context_metadata_round_trip(client):
+    # Create with both fields set -> echoed back on read.
+    r = client.post("/llm-endpoints", json={"name": "budgeted", "provider": "openai",
+        "model": "granite-4", "api_base": "http://h/v1",
+        "context_window_tokens": 8192, "source_chars_budget": 16000})
+    assert r.status_code == 201, r.text
+    ep = r.json()
+    assert ep["context_window_tokens"] == 8192
+    assert ep["source_chars_budget"] == 16000
+
+    # Omitted on create -> null (the fields are optional).
+    r2 = client.post("/llm-endpoints", json={"name": "plain", "provider": "openai",
+        "model": "m", "api_base": "u"})
+    assert r2.status_code == 201, r2.text
+    plain = r2.json()
+    assert plain["context_window_tokens"] is None
+    assert plain["source_chars_budget"] is None
+
+    # PUT rewrites the row from the body: a supplied field updates, an omitted
+    # field resets to null (same full-replace semantics as the other columns).
+    upd = client.put(f"/llm-endpoints/{ep['id']}", json={"name": "budgeted",
+        "provider": "openai", "model": "granite-4", "api_base": "http://h/v1",
+        "source_chars_budget": 20000})
+    assert upd.status_code == 200, upd.text
+    assert upd.json()["source_chars_budget"] == 20000
+    assert upd.json()["context_window_tokens"] is None
+
+
+def test_context_metadata_rejects_non_positive(client):
+    # Field(ge=1): zero/negative are nonsensical budgets -> 422 before the DB.
+    r = client.post("/llm-endpoints", json={"name": "bad", "provider": "o",
+        "model": "m", "api_base": "u", "source_chars_budget": 0})
+    assert r.status_code == 422
+    r2 = client.post("/llm-endpoints", json={"name": "bad2", "provider": "o",
+        "model": "m", "api_base": "u", "context_window_tokens": -1})
+    assert r2.status_code == 422

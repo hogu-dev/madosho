@@ -281,12 +281,14 @@ export interface LlmEndpoint {
   api_base: string; key_env_var: string | null; is_default: boolean; key_present: boolean;
   supports_text: boolean; supports_vision: boolean; is_vision_default: boolean;
   api_flavor: ApiFlavor;
+  context_window_tokens: number | null; source_chars_budget: number | null;
 }
 export interface LlmEndpointInput {
   name: string; provider: string; model: string;
   api_base: string; key_env_var: string | null;
   supports_text: boolean; supports_vision: boolean;
   api_flavor: ApiFlavor;
+  context_window_tokens: number | null; source_chars_budget: number | null;
 }
 
 export type AuthMe = {

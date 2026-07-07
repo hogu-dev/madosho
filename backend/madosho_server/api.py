@@ -310,6 +310,10 @@ class LlmEndpointCreate(BaseModel):
     # "chat" = Chat Completions (default; what local servers speak);
     # "responses" = OpenAI Responses API (some frontier proxies need it for images)
     api_flavor: Literal["chat", "responses"] = "chat"
+    # Optional per-model budget metadata (stage D). ge=1 rejects zero/negative
+    # budgets at the edge; None means "unset -> the run config decides".
+    context_window_tokens: int | None = Field(default=None, ge=1)
+    source_chars_budget: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _at_least_one_capability(self):
@@ -332,6 +336,8 @@ class LlmEndpointRead(BaseModel):
     supports_vision: bool
     is_vision_default: bool
     api_flavor: str
+    context_window_tokens: int | None
+    source_chars_budget: int | None
 
 
 SessionDep = Annotated[Session, Depends(db.get_session)]
@@ -2233,7 +2239,9 @@ def _endpoint_read(row: db.LlmEndpoint) -> LlmEndpointRead:
         model=row.model, api_base=row.api_base, key_env_var=row.key_env_var,
         is_default=row.is_default, key_present=present,
         supports_text=row.supports_text, supports_vision=row.supports_vision,
-        is_vision_default=row.is_vision_default, api_flavor=row.api_flavor)
+        is_vision_default=row.is_vision_default, api_flavor=row.api_flavor,
+        context_window_tokens=row.context_window_tokens,
+        source_chars_budget=row.source_chars_budget)
 
 
 @app.post("/llm-endpoints", response_model=LlmEndpointRead, status_code=201)
@@ -2247,7 +2255,9 @@ def create_llm_endpoint(body: LlmEndpointCreate, session: SessionDep):
         api_base=body.api_base, key_env_var=body.key_env_var, is_default=first,
         supports_text=body.supports_text, supports_vision=body.supports_vision,
         is_vision_default=(body.supports_vision and not has_vision_default),
-        api_flavor=body.api_flavor)
+        api_flavor=body.api_flavor,
+        context_window_tokens=body.context_window_tokens,
+        source_chars_budget=body.source_chars_budget)
     session.add(row)
     try:
         session.commit()
@@ -2273,6 +2283,8 @@ def update_llm_endpoint(endpoint_id: int, body: LlmEndpointCreate, session: Sess
     row.api_base, row.key_env_var = body.api_base, body.key_env_var
     row.supports_text, row.supports_vision = body.supports_text, body.supports_vision
     row.api_flavor = body.api_flavor
+    row.context_window_tokens = body.context_window_tokens
+    row.source_chars_budget = body.source_chars_budget
     if not body.supports_vision:
         row.is_vision_default = False
     if not body.supports_text:
