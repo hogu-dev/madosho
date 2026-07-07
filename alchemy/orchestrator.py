@@ -38,6 +38,7 @@ import research_agent
 
 from .compile import compile_spec
 from .confidence import blend_confidence, split_grade_marker
+from .ledger import COVERAGE_MODES, CoverageLedger, list_corpus_docs
 from .llm import CallCapExceeded, CountingLlm
 from .prompts import compose_prompt, compose_section_prompt, load_report_md
 from .render import render_report
@@ -47,17 +48,29 @@ _MIN_UNIT_CALLS = 2   # one working round + the forced synthesis
 
 
 def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
-             budget=None, guidance: str | None = None,
+             budget=None, coverage: str = "search",
+             guidance: str | None = None,
              prior_draft: str | None = None,
              prior_sections: list | None = None,
+             prior_ledger: dict | None = None,
              max_llm_calls: int | None = None,
              should_cancel=None, on_progress=None) -> GoalRunResult:
     compiled = compile_spec(goal_type, spec)
+    if coverage not in COVERAGE_MODES:
+        raise ValueError(
+            f"unknown coverage mode: {coverage!r} (supported: {COVERAGE_MODES})")
     counting = CountingLlm(llm, max_calls=max_llm_calls)
+    # the ledger exists for EVERY run: search mode gets the honest account
+    # ("consulted N of M"), full/exhaustive add enforcement on top. Built
+    # before any LLM call so even a crashed run reports what it consulted.
+    ledger = CoverageLedger(mode=coverage,
+                            corpus_docs=list_corpus_docs(tools, corpus))
+    ledger.merge_prior(prior_ledger)
     if goal_type == "report":
         return _run_report(compiled, corpus=corpus, tools=tools,
                            counting=counting,
                            budget=budget if budget is not None else research_agent.RunBudget(),
+                           coverage=coverage, ledger=ledger,
                            guidance=guidance,
                            prior_sections=prior_sections or [],
                            max_llm_calls=max_llm_calls,
@@ -72,11 +85,13 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
                                                 max(0, max_llm_calls - 1)))
     report = research_agent.run(prompt, tools=tools, llm=counting,
                                 budget=budget, should_cancel=should_cancel)
+    ledger.mark_citations(report.citations, "search")
     return GoalRunResult(markdown=report.markdown,
                          citations=list(report.citations),
                          run_log=list(report.run_log),
                          stop_reason=report.stop_reason,
-                         usage=counting.usage)
+                         usage=counting.usage,
+                         ledger=ledger.to_dict())
 
 
 def _dedupe_citations(cits: list) -> list:
@@ -134,8 +149,9 @@ def _carry_prior(res: SectionResult, prior: dict | None, shortfall: str) -> None
         res.note = f"carried from prior, not revised: {shortfall}"
 
 
-def _run_report(compiled, *, corpus, tools, counting, budget, guidance,
-                prior_sections, max_llm_calls, should_cancel, on_progress):
+def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
+                ledger, guidance, prior_sections, max_llm_calls,
+                should_cancel, on_progress):
     # keep the FULL prior dicts (content + confidence), not just content: a
     # section that ends unfilled carries the prior's content and confidence
     prior_by_key = {p.get("key"): p for p in prior_sections}
@@ -219,6 +235,7 @@ def _run_report(compiled, *, corpus, tools, counting, budget, guidance,
         content, grade = split_grade_marker(unit.markdown or "")
         res.confidence = blend_confidence(grade, unit.citations)
         citations.extend(unit.citations)
+        ledger.mark_citations(unit.citations, "search")
         if content.strip():
             res.content = content
             res.filled = True
@@ -242,4 +259,5 @@ def _run_report(compiled, *, corpus, tools, counting, budget, guidance,
     return GoalRunResult(markdown=render_report(compiled.title, results),
                          citations=_dedupe_citations(citations),
                          run_log=run_log, stop_reason=stop,
-                         usage=counting.usage, sections=results)
+                         usage=counting.usage, sections=results,
+                         ledger=ledger.to_dict())

@@ -54,7 +54,10 @@ def test_run_goal_end_to_end():
     assert result.citations[0].document_id == 1
     assert result.usage.llm_calls == 2
     assert result.usage.total_tokens == 61
-    assert tools.calls == [("search", {"corpus": "secdocs", "query": "vulns"})]
+    # the ledger lists the corpus before any LLM call, so that call leads
+    # tools.calls even on a plain living-research run (stage C)
+    assert tools.calls == [("list-documents", {"corpus": "secdocs"}),
+                           ("search", {"corpus": "secdocs", "query": "vulns"})]
 
 
 def test_run_goal_revision_passes_draft_and_guidance():
@@ -418,3 +421,78 @@ def test_round_cap_not_bubbled_when_every_section_filled():
         llm=ForcedSynth(), budget=RunBudget(max_rounds=1))
     assert all(s.filled for s in result.sections)
     assert result.stop_reason == "final"
+
+
+# --- Stage C task 3: every run carries an honest coverage ledger ------------
+
+class LedgerFakeTools:
+    """FakeTools plus a list-documents answer, so the ledger can size the
+    corpus. Docs 1 and 2 exist; searches only ever hit doc 1."""
+    def __init__(self, docs=None, listing_ok=True):
+        self.docs = docs if docs is not None else [
+            {"id": 1, "filename": "a.txt", "status": "indexed"},
+            {"id": 2, "filename": "b.txt", "status": "indexed"}]
+        self.listing_ok = listing_ok
+        self.calls = []
+
+    def manifest(self):
+        return FakeTools().manifest()
+
+    def invoke(self, name, args):
+        self.calls.append((name, args))
+        if name == "list-documents":
+            if not self.listing_ok:
+                return ToolResult(ok=False, error="listing down")
+            return ToolResult(ok=True, data={"corpus": args.get("corpus"),
+                                             "documents": list(self.docs)})
+        return FakeTools().invoke(name, args)
+
+
+def test_search_run_reports_honest_ledger():
+    result = alchemy.run_goal(
+        "living-research", {"goal": "map the vulns"}, corpus="secdocs",
+        tools=LedgerFakeTools(), llm=_search_then_final())
+    assert result.ledger is not None
+    assert result.ledger["mode"] == "search"
+    assert result.ledger["total_docs"] == 2
+    assert result.ledger["consulted"] == {"1": "search"}
+    assert result.ledger["complete"] is None
+    assert result.ledger["summary"] == "consulted 1 of 2 docs (search-driven)"
+
+
+def test_ledger_degrades_when_listing_fails():
+    result = alchemy.run_goal(
+        "living-research", {"goal": "map the vulns"}, corpus="secdocs",
+        tools=LedgerFakeTools(listing_ok=False), llm=_search_then_final())
+    assert result.ledger["total_docs"] is None
+    assert "corpus size unknown" in result.ledger["summary"]
+
+
+def test_report_run_builds_ledger_too():
+    template = "# T\n\n## One\n\nfill\n\n## Two\n\nfill"
+    llm = ScriptedLlm([
+        AssistantTurn(text="one body\nCONFIDENCE: high", usage=None),
+        AssistantTurn(text="two body\nCONFIDENCE: high", usage=None),
+    ])
+    result = alchemy.run_goal("report", {"template": template},
+                              corpus="secdocs", tools=LedgerFakeTools(),
+                              llm=llm)
+    assert result.ledger["mode"] == "search"
+    assert result.ledger["total_docs"] == 2
+
+
+def test_prior_ledger_union_is_merged():
+    result = alchemy.run_goal(
+        "living-research", {"goal": "map the vulns"}, corpus="secdocs",
+        tools=LedgerFakeTools(), llm=_search_then_final(),
+        prior_ledger={"consulted": {"2": "search"}})
+    assert result.ledger["consulted"] == {"1": "search", "2": "search"}
+    assert result.ledger["from_prior"] == [2]
+
+
+def test_unknown_coverage_mode_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        alchemy.run_goal("living-research", {"goal": "g"}, corpus="c",
+                         tools=LedgerFakeTools(), llm=_search_then_final(),
+                         coverage="vibes")

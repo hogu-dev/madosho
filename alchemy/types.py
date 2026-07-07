@@ -78,3 +78,5 @@ class GoalRunResult:
     usage: Usage = field(default_factory=Usage)
     sections: list = field(default_factory=list)   # SectionResult per template
                                                    # section (report goals only)
+    ledger: dict | None = None   # CoverageLedger.to_dict() - the honest
+                                 # account of corpus consultation (stage C)
