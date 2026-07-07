@@ -762,3 +762,55 @@ def test_exhaustive_living_research_mines_then_writes():
     assert result.markdown == "the answer"
     assert "fact 1" in seen["user"]
     assert result.ledger["complete"] is True
+
+
+def test_dedupe_matches_loop_semantics():
+    from alchemy.orchestrator import _dedupe_citations
+    from research_agent.types import Citation
+
+    def cit(doc, pipe, pos, quote):
+        return Citation(document_id=doc, pipeline_id=pipe, pipeline="p",
+                        position=pos, citation="c", source=None, score=None,
+                        quote=quote)
+
+    # same passage via two tools (search hit, then whole-text get-doc):
+    # different keys, identical (doc, quote) -> keep the first
+    a = cit(1, 2, 0, "same text")
+    b = cit(1, 9, None, "same text")
+    assert _dedupe_citations([a, b]) == [a]
+    # anonymous citations NEVER collapse, even with identical quotes
+    x = cit(None, None, None, "anon")
+    y = cit(None, None, None, "anon")
+    assert _dedupe_citations([x, y]) == [x, y]
+    # distinct positions on one doc both survive
+    c = cit(1, 2, 0, "q0")
+    d = cit(1, 2, 1, "q1")
+    assert _dedupe_citations([c, d]) == [c, d]
+
+
+def test_call_cap_backstop_mid_unit_keeps_landed_sections():
+    """The CountingLlm BACKSTOP branch (except CallCapExceeded in the unit
+    loop): reachable if the loop's call pattern ever changes, so it is pinned
+    by raising the exception type from a scripted llm mid-unit."""
+    from alchemy.llm import CallCapExceeded
+
+    class BlowsOnSecondUnit:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools):
+            self.n += 1
+            if self.n == 1:
+                return AssistantTurn(text="one body\nCONFIDENCE: high",
+                                     usage=None)
+            raise CallCapExceeded("llm call cap reached (backstop)")
+
+    template = "# T\n\n## One\n\nfill\n\n## Two\n\nfill"
+    result = alchemy.run_goal("report", {"template": template}, corpus="c",
+                              tools=LedgerFakeTools(), llm=BlowsOnSecondUnit(),
+                              max_llm_calls=50)
+    assert result.stop_reason == "call_cap"
+    assert result.sections[0].filled is True
+    assert result.sections[0].content == "one body"
+    assert result.sections[1].filled is False
+    assert result.sections[1].note == "llm call cap"

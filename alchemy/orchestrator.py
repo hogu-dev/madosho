@@ -311,15 +311,27 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
 
 
 def _dedupe_citations(cits: list) -> list:
-    """Cross-unit de-dup: two sections legitimately citing the same chunk
-    should yield one run-level citation. Keyed like the loop's own de-dup
-    (doc/pipeline/position) plus the quote, without reaching into the loop's
-    private helper."""
-    seen, out = set(), []
+    """Cross-unit de-dup with the SAME semantics as the loop's own _dedupe
+    (which already ran within each unit): anonymous citations never collapse,
+    and the same (document, quote) passage arriving via two tools - a search
+    hit in one unit, a whole-text read in another - keeps the first,
+    better-attributed occurrence. Duplicated rather than imported: the loop's
+    helper is private and the research lane is frozen."""
+    seen: set = set()
+    seen_quotes: set = set()
+    out = []
     for c in cits:
-        key = (c.document_id, c.pipeline_id, c.position, c.quote)
+        key = (c.document_id, c.pipeline_id, c.position)
+        if key == (None, None, None):
+            out.append(c)   # never collapse anonymous citations
+            continue
         if key in seen:
             continue
+        if c.document_id is not None and c.quote:
+            qkey = (c.document_id, c.quote)
+            if qkey in seen_quotes:
+                continue
+            seen_quotes.add(qkey)
         seen.add(key)
         out.append(c)
     return out

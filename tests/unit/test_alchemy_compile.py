@@ -145,3 +145,12 @@ Second foo - must not collide with "Foo 2".
     # "Foo" becomes "foo", "Foo 2" becomes "foo-2" (first base "foo-2"),
     # "Foo" again becomes "foo-3" (not "foo-2" which is taken)
     assert keys == ["foo", "foo-2", "foo-3"]
+
+
+def test_slug_of_symbols_only_heading_is_section():
+    from alchemy.compile import _slug
+    assert _slug("") == "section"
+    assert _slug("!!!") == "section"
+    # and end to end: a symbols-only heading still yields a usable key
+    compiled = compile_spec("report", {"template": "## ???\n\nbody"})
+    assert compiled.sections[0].key == "section"

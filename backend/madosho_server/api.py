@@ -152,7 +152,7 @@ DeleteEnqueueDep = Annotated[
 
 # ---- schemas -------------------------------------------------------------
 class CorpusCreate(BaseModel):
-    # same pattern the kernel's MadoshoConfig.corpus enforces — fail fast here
+    # same pattern the kernel's MadoshoConfig.corpus enforces - fail fast here
     name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -1738,7 +1738,7 @@ def get_pipeline_extract_diff(document_id: int, left: int, right: int, session: 
     """Extract-stage diff between two of this document's pipelines.
 
     Reads each pipeline's STORED artifacts (`pipeline.artifacts.blocks`) and diffs
-    them page-aligned — never a re-parse. Same word-level, whitespace-insensitive
+    them page-aligned - never a re-parse. Same word-level, whitespace-insensitive
     machinery as the legacy head-to-head (`textdiff.diff_spans`), so the page rail
     and Raw/Rendered viewer reuse the existing `ComparisonPage` shape unchanged;
     `engine_a`/`engine_b` are the two pipeline names rather than parser engines.

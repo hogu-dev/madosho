@@ -410,3 +410,20 @@ def test_exec_fresh_coverage_skips_prior_ledger(tmp_path):
         alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env(),
                                          run_goal_fn=fake_run_goal)
     assert seen["prior_ledger"] is None
+
+
+def test_progress_writer_suppressed_on_terminal_row(tmp_path):
+    """A late progress event from a cancelled run must not clobber the
+    terminal row (the status-guard suppression path in
+    _make_progress_writer)."""
+    from madosho_server.alchemy_exec import _make_progress_writer
+    rid = _seed(tmp_path)
+    with db.SessionLocal() as s:
+        run = s.get(db.AlchemyRun, rid)
+        run.status = "cancelled"
+        run.progress = {"phase": "done"}
+        s.commit()
+    writer = _make_progress_writer(rid)   # opens its own SessionLocal
+    writer({"phase": "running", "section": "late"})
+    with db.SessionLocal() as s:
+        assert s.get(db.AlchemyRun, rid).progress == {"phase": "done"}
