@@ -67,3 +67,31 @@ def test_section_prompt_falls_back_to_key_when_untitled():
     p = compose_section_prompt("g", Section(key="body", instruction="i"),
                                corpus="c")
     assert "body" in p
+
+
+from alchemy.prompts import compose_coverage_query, compose_forced_revision_prompt
+from alchemy.types import Section
+
+
+def test_coverage_query_prefers_weak_sections_and_caps_length():
+    secs = [Section(key="one", instruction="i" * 400, title="Heading One")]
+    q = compose_coverage_query(secs, goal="overall goal")
+    assert "Heading One" in q
+    assert len(q) <= 300
+
+
+def test_coverage_query_falls_back_to_goal():
+    q = compose_coverage_query([], goal="overall goal text")
+    assert q == "overall goal text"
+
+
+def test_forced_revision_prompt_carries_evidence_and_current_text():
+    p = compose_forced_revision_prompt(
+        "the goal", "Findings", "current body",
+        ["[doc 7 @2] quote one", "[doc 9 @0] quote two"])
+    assert "the goal" in p
+    assert "Findings" in p
+    assert "current body" in p
+    assert "quote one" in p and "quote two" in p
+    assert "CONFIDENCE:" in p          # revision must re-grade itself
+    assert "unchanged" in p.lower()    # explicit permission to keep the text

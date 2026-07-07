@@ -27,7 +27,13 @@ On a rerun, a section that ends unfilled for ANY reason (cap, cancel, crash,
 empty) falls back to the prior run's content for that section if it had any -
 so a rerun can only improve a report, never regress a section it once filled.
 
-Stage C grows coverage enforcement here, behind the same run_goal signature
+Stage C adds coverage ENFORCEMENT behind the same run_goal signature, in two
+phases per mode. `full`: after the section units run (or the one living-research
+unit), every still-unconsulted doc gets a system-side forced search-doc pass
+(zero LLM calls - the model cannot dodge a doc by not searching it), and weak
+sections that received forced evidence get one metered revision call each
+(_forced_pass). `exhaustive` mines every doc BEFORE the units run instead
+(Task 6). Neither phase changes run_goal's signature or GoalRunResult's shape
 - WHY the server adapter and CLI never change when the engine deepens.
 """
 from __future__ import annotations
@@ -38,13 +44,103 @@ import research_agent
 
 from .compile import compile_spec
 from .confidence import blend_confidence, split_grade_marker
-from .ledger import COVERAGE_MODES, CoverageLedger, list_corpus_docs
+from .ledger import (COVERAGE_MODES, CoverageLedger, citations_from_hits,
+                     list_corpus_docs)
 from .llm import CallCapExceeded, CountingLlm
-from .prompts import compose_prompt, compose_section_prompt, load_report_md
+from .prompts import (compose_coverage_query, compose_forced_revision_prompt,
+                      compose_prompt, compose_section_prompt, load_report_md)
 from .render import render_report
 from .types import GoalRunResult, SectionResult
 
 _MIN_UNIT_CALLS = 2   # one working round + the forced synthesis
+_FORCED_TOP_K = 5          # chunks pulled per untouched doc in a forced pass
+_WEAK_SECTION_CAP = 3      # revision targets per forced pass; more dilutes
+                           # the query and multiplies revision calls
+_EVIDENCE_CHAR_CAP = 8000  # evidence text per revision prompt; a one-turn
+                           # revision must fit small models comfortably
+
+
+def _weak_sections(results: list, cap: int = _WEAK_SECTION_CAP) -> list:
+    """The forced pass's revision targets: unfilled sections first (template
+    order), then filled ones from lowest confidence up. WHY a cap: the forced
+    QUERY quotes these sections and each one costs a revision call - past a
+    few, the pass stops being a targeted repair and becomes a rewrite."""
+    unfilled = [r for r in results if not r.filled]
+    order = {lvl: i for i, lvl in enumerate(("low", "medium", "high"))}
+    filled = sorted((r for r in results if r.filled),
+                    key=lambda r: order.get((r.confidence or {}).get("level"), 1))
+    return (unfilled + filled)[:cap]
+
+
+def _forced_pass(ledger, weak: list, *, goal: str, tools, counting,
+                 max_llm_calls, should_cancel, on_progress):
+    """Enforce `full` coverage: system-side search-doc over every untouched
+    doc (zero LLM calls - the model cannot skip docs by not searching), then
+    one metered revision call per weak section that evidence came back for.
+
+    Returns (new_citations, halted_reason_or_None). Mutates the ledger and
+    the weak SectionResults in place. Never raises: retrieval failures land
+    in ledger.failures, a call-cap trip lands in ledger.shortfall - honest
+    shortfall, not a dead run."""
+    new_citations: list = []
+    evidence: list[str] = []
+    untouched = ledger.unconsulted()
+    query = compose_coverage_query(
+        [s for s in weak], goal) if weak else goal[:300]
+    for i, doc_id in enumerate(untouched):
+        if should_cancel is not None and should_cancel():
+            ledger.shortfall = "cancelled"
+            return new_citations, "cancelled"
+        if on_progress is not None:
+            on_progress({"phase": "forced_pass", "docs_done": i,
+                         "docs_total": len(untouched)})
+        res = tools.invoke("search-doc", {"document_id": doc_id,
+                                          "query": query,
+                                          "top_k": _FORCED_TOP_K})
+        if not getattr(res, "ok", False) or not isinstance(res.data, dict):
+            ledger.failures[doc_id] = (getattr(res, "error", None)
+                                       or "search-doc failed")[:200]
+            continue
+        hits = res.data.get("hits") or []
+        # a successful query over the doc's index IS consultation ("full"
+        # promises consulted, not read); zero hits just means it had nothing
+        # for these sections
+        ledger.mark(doc_id, "forced")
+        cits = citations_from_hits(hits)
+        new_citations.extend(cits)
+        for c in cits:
+            if c.quote:
+                evidence.append(f"[{c.citation}] {c.quote}")
+    if not evidence:
+        return new_citations, None
+    ev_block, used = [], 0
+    for e in evidence:
+        if used + len(e) > _EVIDENCE_CHAR_CAP:
+            break
+        ev_block.append(e)
+        used += len(e)
+    for res in weak:
+        if max_llm_calls is not None and counting.usage.llm_calls >= max_llm_calls:
+            ledger.shortfall = "llm call cap"
+            return new_citations, "call_cap"
+        try:
+            turn = counting.complete(
+                [{"role": "system", "content": load_report_md()},
+                 {"role": "user", "content": compose_forced_revision_prompt(
+                     goal, res.title or res.key, res.content, ev_block)}], [])
+        except CallCapExceeded:
+            ledger.shortfall = "llm call cap"
+            return new_citations, "call_cap"
+        content, grade = split_grade_marker(turn.text or "")
+        if content.strip():
+            res.content = content
+            res.filled = True
+            res.note = ""
+            # revised with forced evidence: re-blend from the forced
+            # citations (per-section attribution of forced hits is not
+            # tracked; the pass-level citations are the honest basis)
+            res.confidence = blend_confidence(grade, new_citations)
+    return new_citations, None
 
 
 def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
@@ -86,12 +182,23 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
     report = research_agent.run(prompt, tools=tools, llm=counting,
                                 budget=budget, should_cancel=should_cancel)
     ledger.mark_citations(report.citations, "search")
-    return GoalRunResult(markdown=report.markdown,
-                         citations=list(report.citations),
-                         run_log=list(report.run_log),
-                         stop_reason=report.stop_reason,
-                         usage=counting.usage,
-                         ledger=ledger.to_dict())
+    markdown, stop, citations = report.markdown, report.stop_reason, list(report.citations)
+    if coverage == "full" and stop not in ("cancelled",):
+        # the whole draft is the one weak "section": revise it once with any
+        # forced evidence, so living-research gets the same guarantee
+        body = SectionResult(key="body", content=markdown or "",
+                             filled=bool((markdown or "").strip()))
+        forced_cits, forced_halt = _forced_pass(
+            ledger, [body], goal=compiled.goal, tools=tools,
+            counting=counting, max_llm_calls=max_llm_calls,
+            should_cancel=should_cancel, on_progress=on_progress)
+        citations.extend(forced_cits)
+        markdown = body.content
+        if forced_halt is not None:
+            stop = forced_halt
+    return GoalRunResult(markdown=markdown, citations=citations,
+                         run_log=list(report.run_log), stop_reason=stop,
+                         usage=counting.usage, ledger=ledger.to_dict())
 
 
 def _dedupe_citations(cits: list) -> list:
@@ -247,9 +354,30 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
                 round_cap_empty = True
             _carry_prior(res, prior, _SHORTFALL["no_content"])
 
-    for res in results:   # skipped/failed sections still report numbers
+    if coverage == "full" and halted is None:
+        forced_cits, forced_halt = _forced_pass(
+            ledger, _weak_sections(results), goal=compiled.goal, tools=tools,
+            counting=counting, max_llm_calls=max_llm_calls,
+            should_cancel=should_cancel, on_progress=on_progress)
+        citations.extend(forced_cits)
+        if forced_halt is not None:
+            halted = forced_halt
+    elif coverage == "full" and halted is not None:
+        # the run already stopped (cap/cancel/crash): coverage enforcement
+        # cannot run, and the ledger must say so rather than stay silent
+        ledger.shortfall = _SHORTFALL.get(halted, halted)
+
+    coverage_ok = ledger.complete()
+    for res in results:
         if not res.confidence:
-            res.confidence = blend_confidence(None, [])
+            res.confidence = blend_confidence(None, [], coverage_ok=coverage_ok)
+        elif coverage_ok is not None and "coverage_complete" not in res.confidence \
+                and not (res.note or "").startswith(("carried from prior",
+                                                     "unit failed (carried")):
+            res.confidence = dict(res.confidence,
+                                  coverage_complete=coverage_ok)
+            if coverage_ok is False and res.confidence.get("level") == "high":
+                res.confidence["level"] = "medium"
     if halted is not None:
         stop = halted
     elif round_cap_empty:

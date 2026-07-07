@@ -496,3 +496,126 @@ def test_unknown_coverage_mode_raises():
         alchemy.run_goal("living-research", {"goal": "g"}, corpus="c",
                          tools=LedgerFakeTools(), llm=_search_then_final(),
                          coverage="vibes")
+
+
+# --- Stage C task 5: full coverage - forced passes + weak-section revision ---
+
+class FullCoverageTools(LedgerFakeTools):
+    """search hits doc 1 only; search-doc serves the forced pass on doc 2."""
+    def invoke(self, name, args):
+        self.calls.append((name, args))
+        if name == "list-documents":
+            return ToolResult(ok=True, data={"corpus": args.get("corpus"),
+                                             "documents": list(self.docs)})
+        if name == "search-doc":
+            return ToolResult(ok=True, data={"hits": [{
+                "document_id": args["document_id"], "pipeline_id": 2,
+                "pipeline": "p", "position": 1,
+                "citation": f"doc {args['document_id']} @1",
+                "source": "b.txt", "score": 0.8,
+                "text": "forced evidence text"}]})
+        return FakeTools().invoke(name, args)
+
+
+def _one_section_template():
+    return "# T\n\n## One\n\nfill it"
+
+
+def test_full_coverage_forces_untouched_docs_and_revises():
+    llm = ScriptedLlm([
+        # unit for section One: searches (touches doc 1), then writes
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="1", name="search",
+                     arguments={"corpus": "c", "query": "q"})], usage=None),
+        AssistantTurn(text="body\nCONFIDENCE: high", usage=None),
+        # forced revision of the weakest section with doc-2 evidence
+        AssistantTurn(text="revised body\nCONFIDENCE: high", usage=None),
+    ])
+    tools = FullCoverageTools()
+    result = alchemy.run_goal("report", {"template": _one_section_template()},
+                              corpus="c", tools=tools, llm=llm,
+                              coverage="full")
+    assert result.ledger["consulted"] == {"1": "search", "2": "forced"}
+    assert result.ledger["complete"] is True
+    assert result.sections[0].content == "revised body"
+    # forced retrieval was SYSTEM-side: a search-doc call for doc 2 happened
+    assert ("search-doc", ) [0] in [c[0] for c in tools.calls]
+    forced = [c for c in tools.calls if c[0] == "search-doc"]
+    assert forced and forced[0][1]["document_id"] == 2
+    # forced evidence is attributed like unit evidence
+    assert any(c.document_id == 2 for c in result.citations)
+    # complete coverage recorded in the blend
+    assert result.sections[0].confidence["coverage_complete"] is True
+
+
+def test_full_coverage_failure_reported_honestly():
+    class FailingForce(FullCoverageTools):
+        def invoke(self, name, args):
+            if name == "search-doc":
+                self.calls.append((name, args))
+                return ToolResult(ok=False, error="pipeline missing")
+            return super().invoke(name, args)
+
+    llm = ScriptedLlm([
+        # unit touches doc 1 via search, so only doc 2 is left unconsulted
+        # for the forced pass to (fail to) reach
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="1", name="search",
+                     arguments={"corpus": "c", "query": "q"})], usage=None),
+        AssistantTurn(text="body\nCONFIDENCE: high", usage=None),
+    ])
+    result = alchemy.run_goal("report", {"template": _one_section_template()},
+                              corpus="c", tools=FailingForce(), llm=llm,
+                              coverage="full")
+    assert result.ledger["complete"] is False
+    assert result.ledger["failures"]["2"].startswith("pipeline missing")
+    # incomplete coverage caps fresh sections at medium
+    assert result.sections[0].confidence["level"] == "medium"
+    assert result.sections[0].confidence["coverage_complete"] is False
+
+
+def test_full_coverage_respects_call_cap():
+    # cap = 2: the single section unit gets both calls (quota floor), leaving
+    # nothing for the revision - forced RETRIEVAL still happens (free), the
+    # revision is skipped, and the shortfall is stated.
+    llm = ScriptedLlm([
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="1", name="search",
+                     arguments={"corpus": "c", "query": "q"})], usage=None),
+        AssistantTurn(text="body\nCONFIDENCE: high", usage=None),
+    ])
+    result = alchemy.run_goal("report", {"template": _one_section_template()},
+                              corpus="c", tools=FullCoverageTools(), llm=llm,
+                              coverage="full", max_llm_calls=2)
+    assert result.usage.llm_calls == 2
+    assert result.ledger["consulted"]["2"] == "forced"   # consultation is free
+    assert result.sections[0].content == "body"          # no revision happened
+    assert "llm call cap" in result.ledger["shortfall"]
+
+
+def test_full_coverage_union_skips_docs_prior_run_covered():
+    llm = ScriptedLlm([
+        AssistantTurn(text="body\nCONFIDENCE: high", usage=None),
+    ])
+    tools = FullCoverageTools()
+    result = alchemy.run_goal("report", {"template": _one_section_template()},
+                              corpus="c", tools=tools, llm=llm,
+                              coverage="full",
+                              prior_ledger={"consulted": {"1": "search",
+                                                          "2": "search"}})
+    # nothing untouched -> no forced pass at all
+    assert not [c for c in tools.calls if c[0] == "search-doc"]
+    assert result.ledger["complete"] is True
+
+
+def test_full_coverage_living_research_revises_draft():
+    llm = ScriptedLlm([
+        AssistantTurn(text="draft body", usage=None),           # the unit
+        AssistantTurn(text="revised draft body", usage=None),   # revision
+    ])
+    tools = FullCoverageTools()
+    result = alchemy.run_goal("living-research", {"goal": "g"}, corpus="c",
+                              tools=tools, llm=llm, coverage="full")
+    assert result.markdown == "revised draft body"
+    assert result.ledger["consulted"]["2"] == "forced"
+    assert result.ledger["complete"] is True

@@ -69,3 +69,41 @@ def compose_section_prompt(goal: str, section: Section, *, corpus: str,
                      "guidance; where it concerns this section, treat it as "
                      "the top priority:\n" + guidance)
     return "\n\n".join(parts)
+
+
+def compose_coverage_query(sections, goal: str) -> str:
+    """The retrieval query for a forced pass: what the report still NEEDS,
+    phrased from the weakest sections' headings and instructions. Capped at
+    300 chars - retrieval queries degrade past that, and the sections' first
+    words carry the topical signal. Falls back to the goal when nothing is
+    weak (the pass then only proves consultation, it rarely changes text).
+
+    Duck-typed over BOTH Section (has .instruction) and SectionResult (has
+    only .title/.key) - the orchestrator hands weak SectionResults here, so
+    .instruction is read defensively via getattr."""
+    parts = []
+    for s in sections:
+        label = getattr(s, "title", "") or getattr(s, "key", "")
+        instr = getattr(s, "instruction", "")
+        parts.append(f"{label}: {instr}".rstrip(": ").rstrip())
+    return ("; ".join(parts)[:300]) if parts else goal[:300]
+
+
+def compose_forced_revision_prompt(goal: str, title: str, current: str,
+                                   evidence: list[str]) -> str:
+    """One-turn revision of a weak section with forced-coverage evidence in
+    the prompt (the system already retrieved it - no tools needed, so the
+    call count is deterministic: exactly one per revised section)."""
+    ev = "\n".join(f"- {e}" for e in evidence)
+    return (
+        f"Report goal: {goal}\n\n"
+        f"Section: {title}\n\n"
+        "This section was written (or left unfilled) without consulting some "
+        "corpus documents. The passages below were since retrieved from those "
+        "documents. Revise the section to incorporate whatever is relevant; "
+        "if nothing is, return the current text unchanged. Cite evidence you "
+        "use with its citation string in square brackets.\n\n"
+        f"--- Current section ---\n{current or '(empty)'}\n--- End current ---\n\n"
+        f"--- New evidence ---\n{ev}\n--- End evidence ---\n\n"
+        "Reply with ONLY the section body, then one final line exactly:\n"
+        "CONFIDENCE: high|medium|low")
