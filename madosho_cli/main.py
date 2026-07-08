@@ -27,6 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="madosho-cli",
         description="Command-line client over madosho's HTTP API.",
     )
+    ap.add_argument(
+        "--exclude-generated", action="store_true", dest="exclude_generated",
+        help="hide alchemy-generated documents from search results",
+    )
     sub = ap.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("list-corpora", help="list available corpora")
@@ -171,6 +175,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="markdown template file (report)")
     p.add_argument("--coverage", default="search",
                    choices=["search", "full", "exhaustive"])
+    p.add_argument("--include-generated", action="store_true",
+                   dest="include_generated",
+                   help="let this goal's runs cite alchemy-generated documents")
     _add_json(p)
     p.set_defaults(func=commands.cmd_alchemy_create)
 

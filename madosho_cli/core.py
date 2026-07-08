@@ -149,21 +149,27 @@ def _run_query(payload: dict[str, Any], top_k: int) -> dict[str, Any]:
 
 
 def search(corpus: str, query: str, top_k: int = 8,
-           pipeline: str | None = None) -> dict[str, Any]:
+           pipeline: str | None = None,
+           include_generated: bool = True) -> dict[str, Any]:
     payload: dict[str, Any] = {"corpus": corpus, "prompt": query}
     if pipeline:
         payload["pipelines"] = [pipeline]
+    if not include_generated:
+        payload["include_generated"] = False
     return _run_query(payload, top_k)
 
 
 def search_document(document_id: int, query: str, top_k: int = 8,
-                    pipeline: str | None = None) -> dict[str, Any]:
+                    pipeline: str | None = None,
+                    include_generated: bool = True) -> dict[str, Any]:
     # RAG over a single document. The query plane accepts document_id in place of
     # corpus (exactly one of the two), so the only difference from search() is the
     # scope key - same ranked, cited hits come back.
     payload: dict[str, Any] = {"document_id": document_id, "prompt": query}
     if pipeline:
         payload["pipelines"] = [pipeline]
+    if not include_generated:
+        payload["include_generated"] = False
     return _run_query(payload, top_k)
 
 
@@ -280,9 +286,12 @@ def wait_for_document(
 
 def alchemy_create(name: str, corpus: str, spec: dict[str, Any],
                    goal_type: str = "living-research",
-                   coverage: str = "search") -> dict[str, Any]:
+                   coverage: str = "search",
+                   include_generated: bool = False) -> dict[str, Any]:
     payload = {"name": name, "corpus_id": _resolve_corpus_id(corpus),
                "goal_type": goal_type, "spec": spec, "coverage": coverage}
+    if include_generated:
+        payload["include_generated"] = True
     return http.post_json(f"{http.control_base()}/alchemy/goals", payload)
 
 

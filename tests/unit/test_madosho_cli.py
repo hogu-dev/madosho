@@ -430,3 +430,17 @@ def test_cancel_run_without_yes_stdin_n_aborts(fake_http, monkeypatch, capsys):
     assert "aborted" in out
     # no POST should have been made
     assert not any("/cancel" in c[1] for c in fh.calls)
+
+
+def test_search_exclude_generated_top_level_flag(fake_http):
+    fh = fake_http({"/query": {"hits": []}})
+    cli_main.main(["--exclude-generated", "search", "aerospace", "q", "--json"])
+    _, _, body = fh.calls[0]
+    assert body["include_generated"] is False
+
+
+def test_search_default_includes_generated(fake_http):
+    fh = fake_http({"/query": {"hits": []}})
+    cli_main.main(["search", "aerospace", "q", "--json"])
+    _, _, body = fh.calls[0]
+    assert "include_generated" not in body        # query default True

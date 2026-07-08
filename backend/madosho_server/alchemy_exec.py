@@ -45,6 +45,7 @@ def _make_progress_writer(alchemy_run_id):
 def _default_run_goal(goal_type, spec, *, corpus, settings, guidance,
                       prior_draft, provider, model, budget_chars, max_rounds,
                       max_llm_calls, alchemy_run_id, coverage="search",
+                      include_generated: bool = False,
                       prior_sections=None, prior_ledger=None,
                       on_progress=None, tools=None, llm=None,
                       should_cancel=None):
@@ -66,7 +67,14 @@ def _default_run_goal(goal_type, spec, *, corpus, settings, guidance,
     endpoint = research_agent.LlmEndpoint(
         provider=provider, model=model,
         api_key=settings.llm_api_key, api_base=settings.llm_api_base)
-    tools = research_agent.CliToolProvider(["python", "-m", "madosho_cli"])
+    # Per-RUN exclusion seam: bake --exclude-generated into THIS provider's base
+    # argv (not a process env var) so a goal's units never retrieve their own
+    # prior drafts, and so a concurrent research run in the same process is
+    # unaffected (the flag lives on this CliToolProvider instance only).
+    argv = ["python", "-m", "madosho_cli"]
+    if not include_generated:
+        argv.append("--exclude-generated")
+    tools = research_agent.CliToolProvider(argv)
     llm = research_agent.AnyLlmClient(endpoint)
     budget = research_agent.RunBudget(max_context_chars=budget_chars,
                                       max_rounds=max_rounds)
@@ -188,6 +196,7 @@ def execute_alchemy_run(session, alchemy_run_id: int, settings,
         budget_chars=budget_chars,
         max_rounds=cfg.get("max_rounds", 8),
         max_llm_calls=cfg.get("max_llm_calls"),
+        include_generated=goal.include_generated,
         alchemy_run_id=alchemy_run_id, **kw))
     try:
         result = runner(goal.goal_type, goal.spec, corpus=corpus.name,

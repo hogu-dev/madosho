@@ -78,3 +78,32 @@ def test_corpus_query_scopes_through_membership_join(tmp_path):
     res = retrieval.multi_pipeline_query(
         s, c, "q", open_pipeline=lambda pl: corpora[pl.id])
     assert {r.pipeline_name for r in res} == {"in_docling"}   # out.pdf is not a member
+
+
+def test_member_documents_can_exclude_generated(tmp_path):
+    s, c = _setup(tmp_path)
+    _doc(s, c, "src.pdf")
+    gen = _doc(s, c, "gen.md")
+    gen.origin = "generated"; s.commit()
+    names = {d.filename for d in membership.member_documents(s, c.id)}
+    assert names == {"src.pdf", "gen.md"}          # default includes both
+    names_excl = {d.filename for d in
+                  membership.member_documents(s, c.id, include_generated=False)}
+    assert names_excl == {"src.pdf"}
+
+
+def test_corpus_query_excludes_generated_when_flagged(tmp_path):
+    s, c = _setup(tmp_path)
+    d1 = _doc(s, c, "src.pdf")
+    d2 = _doc(s, c, "gen.md")
+    d2.origin = "generated"; s.commit()
+    p1 = _pipeline(s, c, d1, "src_docling", 5.0)
+    p2 = _pipeline(s, c, d2, "gen_docling", 5.0)
+    corpora = {p1.id: _FakeCorpus(["a"]), p2.id: _FakeCorpus(["b"])}
+    incl = retrieval.multi_pipeline_query(
+        s, c, "q", open_pipeline=lambda pl: corpora[pl.id])
+    assert {r.pipeline_name for r in incl} == {"src_docling", "gen_docling"}
+    excl = retrieval.multi_pipeline_query(
+        s, c, "q", open_pipeline=lambda pl: corpora[pl.id],
+        include_generated=False)
+    assert {r.pipeline_name for r in excl} == {"src_docling"}

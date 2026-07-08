@@ -71,7 +71,8 @@ def _print_hits(hits: list) -> None:
 
 def cmd_search(args: argparse.Namespace) -> int:
     data = core.search(args.corpus, args.query, top_k=args.top_k,
-                       pipeline=args.pipeline)
+                       pipeline=args.pipeline,
+                       include_generated=not getattr(args, "exclude_generated", False))
     if args.json:
         _emit(data)
     else:
@@ -81,7 +82,8 @@ def cmd_search(args: argparse.Namespace) -> int:
 
 def cmd_search_doc(args: argparse.Namespace) -> int:
     data = core.search_document(args.document_id, args.query, top_k=args.top_k,
-                                pipeline=args.pipeline)
+                                pipeline=args.pipeline,
+                                include_generated=not getattr(args, "exclude_generated", False))
     if args.json:
         _emit(data)
     else:
@@ -300,7 +302,8 @@ def cmd_alchemy_create(args: argparse.Namespace) -> int:
         spec = {"goal": args.goal}
     data = core.alchemy_create(args.name, args.corpus, spec,
                                goal_type=args.goal_type,
-                               coverage=args.coverage)
+                               coverage=args.coverage,
+                               include_generated=args.include_generated)
     _emit_or_print(args, data, lambda d: f"created goal {d['name']} (id {d['id']})")
     return 0
 

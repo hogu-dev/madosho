@@ -638,6 +638,7 @@ class AlchemyGoalCreate(BaseModel):
     goal_type: str = Field(default="living-research")
     spec: dict
     coverage: str = Field(default="search", pattern="^(search|full|exhaustive)$")
+    include_generated: bool = False
 
 
 class AlchemyGoalRead(BaseModel):
@@ -647,6 +648,7 @@ class AlchemyGoalRead(BaseModel):
     goal_type: str
     spec: dict
     coverage: str
+    include_generated: bool = False
     created_at: str | None = None
 
 
@@ -1901,6 +1903,7 @@ def _iso(dt):
 def _alchemy_goal_dict(g: "db.AlchemyGoal") -> dict:
     return {"id": g.id, "name": g.name, "corpus_id": g.corpus_id,
             "goal_type": g.goal_type, "spec": g.spec, "coverage": g.coverage,
+            "include_generated": g.include_generated,
             "created_at": _iso(g.created_at)}
 
 
@@ -2112,7 +2115,8 @@ def create_alchemy_goal(body: AlchemyGoalCreate, session: SessionDep):
         raise HTTPException(status_code=409, detail="goal name already exists")
     goal = db.AlchemyGoal(name=body.name, corpus_id=body.corpus_id,
                           goal_type=body.goal_type, spec=body.spec,
-                          coverage=body.coverage)
+                          coverage=body.coverage,
+                          include_generated=body.include_generated)
     session.add(goal)
     session.commit()
     session.refresh(goal)

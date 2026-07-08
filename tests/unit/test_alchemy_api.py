@@ -35,6 +35,23 @@ def test_create_goal(tmp_path):
     assert r.json()["name"] == "find_vuln"
 
 
+def test_create_goal_include_generated_round_trips(tmp_path):
+    """The include_generated create field lands on the DB row and comes back
+    on both the create response and a subsequent read (work-unit exclusion,
+    stage D). Server default is False (exclude); True is an explicit opt-in."""
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    r = _create_goal(client, cid)                 # default: not sent
+    assert r.status_code == 201, r.text
+    assert r.json()["include_generated"] is False
+
+    r2 = _create_goal(client, cid, name="find_vuln_2", include_generated=True)
+    assert r2.status_code == 201, r2.text
+    assert r2.json()["include_generated"] is True
+    got = client.get("/alchemy/goals/find_vuln_2")
+    assert got.json()["include_generated"] is True
+
+
 def test_create_goal_bad_corpus_404(tmp_path):
     client, _ = _client(tmp_path)
     r = _create_goal(client, 999)

@@ -617,3 +617,26 @@ def test_alchemy_finalize_forwards_ingest_flag(fake_http):
     _, url, body = fh.calls[-1]
     assert url.endswith("/alchemy/goals/find_vuln/finalize")
     assert body == {"version": 1, "ingest": True}
+
+
+def test_alchemy_create_include_generated_flag(fake_http):
+    fh = fake_http({
+        "/corpora": [{"id": 3, "name": "secdocs", "config": {}}],
+        "/alchemy/goals": _goal(),
+    })
+    cli_main.main(["alchemy", "create", "find_vuln", "--corpus", "secdocs",
+                   "--goal", "map vulns", "--include-generated", "--json"])
+    _, url, body = fh.calls[-1]
+    assert url.endswith("/alchemy/goals")
+    assert body["include_generated"] is True
+
+
+def test_alchemy_create_default_omits_include_generated(fake_http):
+    fh = fake_http({
+        "/corpora": [{"id": 3, "name": "secdocs", "config": {}}],
+        "/alchemy/goals": _goal(),
+    })
+    cli_main.main(["alchemy", "create", "find_vuln", "--corpus", "secdocs",
+                   "--goal", "map vulns", "--json"])
+    _, _, body = fh.calls[-1]
+    assert "include_generated" not in body        # server default False

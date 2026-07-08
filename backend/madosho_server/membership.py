@@ -17,20 +17,27 @@ def add_membership(session, document_id: int, corpus_id: int) -> None:
         session.add(db.DocumentCorpus(document_id=document_id, corpus_id=corpus_id))
 
 
-def member_document_ids(session, corpus_id: int) -> list[int]:
-    return list(session.scalars(
-        select(db.Document.id)
-        .join(db.DocumentCorpus, db.DocumentCorpus.document_id == db.Document.id)
-        .where(db.DocumentCorpus.corpus_id == corpus_id)
-        .order_by(db.Document.id)))
+def member_document_ids(session, corpus_id: int, *,
+                        include_generated: bool = True) -> list[int]:
+    q = (select(db.Document.id)
+         .join(db.DocumentCorpus, db.DocumentCorpus.document_id == db.Document.id)
+         .where(db.DocumentCorpus.corpus_id == corpus_id))
+    if not include_generated:
+        q = q.where(db.Document.origin != "generated")
+    return list(session.scalars(q.order_by(db.Document.id)))
 
 
-def member_documents(session, corpus_id: int, *, indexed_only: bool = False):
+def member_documents(session, corpus_id: int, *, indexed_only: bool = False,
+                     include_generated: bool = True):
     q = (select(db.Document)
          .join(db.DocumentCorpus, db.DocumentCorpus.document_id == db.Document.id)
          .where(db.DocumentCorpus.corpus_id == corpus_id))
     if indexed_only:
         q = q.where(db.Document.status == "indexed")
+    # Work-unit exclusion (stage D): keep a goal's runs from citing their own
+    # prior drafts. origin is NOT NULL (default 'source'), so the != test is safe.
+    if not include_generated:
+        q = q.where(db.Document.origin != "generated")
     return list(session.scalars(q.order_by(db.Document.id)))
 
 

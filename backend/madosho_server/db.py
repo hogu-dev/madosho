@@ -310,6 +310,10 @@ class AlchemyGoal(Base):
     goal_type: Mapped[str] = mapped_column(String(32))   # living-research (stage A); report (stage B)
     spec: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)
     coverage: Mapped[str] = mapped_column(String(16), default="search")  # search (stage A); full|exhaustive later
+    # Work-unit exclusion (stage D): a goal's runs EXCLUDE generated docs by
+    # default so a run never cites its own prior drafts. Opt in to let runs see
+    # generated material (e.g. a meta-report over prior reports).
+    include_generated: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -458,6 +462,9 @@ def _ensure_added_columns() -> None:
         conn.execute(text(
             "ALTER TABLE alchemy_run ADD COLUMN IF NOT EXISTS "
             "ledger JSONB NOT NULL DEFAULT '{}'::jsonb"))
+        conn.execute(text(
+            "ALTER TABLE alchemy_goal ADD COLUMN IF NOT EXISTS "
+            "include_generated BOOLEAN NOT NULL DEFAULT false"))
 
 
 def seed_llm_endpoints_from_env(settings) -> bool:

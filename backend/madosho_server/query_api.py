@@ -73,6 +73,7 @@ class QueryRequest(BaseModel):
     prompt: str
     llm: str | None = None          # "provider:model"
     pipelines: list[str] | None = None
+    include_generated: bool = True  # False hides alchemy-generated docs (work-unit exclusion)
 
 
 class Citation(BaseModel):
@@ -174,7 +175,8 @@ def query(body: QueryRequest, session: SessionDep, settings: SettingsDep):
             row = _corpus_row_or_404(session, body.corpus)
             ph = retrieval.multi_pipeline_query(
                 session, row, body.prompt, open_pipeline=_open_pipeline(settings),
-                pipeline_names=body.pipelines)
+                pipeline_names=body.pipelines,
+                include_generated=body.include_generated)
     except MadoshoError as e:
         raise HTTPException(status_code=400, detail=str(e))
     hits = [p.hit for p in ph]   # bare Hit list for generation; ph kept for pipeline-attributed citations

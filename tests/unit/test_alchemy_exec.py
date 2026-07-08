@@ -107,8 +107,8 @@ def test_execute_real_path_wrapper_call_shape(tmp_path, monkeypatch):
     def stand_in(goal_type, spec, *, corpus, settings, guidance, prior_draft,
                  provider, model, budget_chars, max_rounds, max_llm_calls,
                  alchemy_run_id, tools=None, llm=None, should_cancel=None,
-                 coverage="search", prior_sections=None, prior_ledger=None,
-                 on_progress=None):
+                 coverage="search", include_generated=False, prior_sections=None,
+                 prior_ledger=None, on_progress=None):
         got.update(tools=tools, llm=llm, should_cancel=should_cancel,
                    budget_chars=budget_chars, max_rounds=max_rounds,
                    max_llm_calls=max_llm_calls)
@@ -419,8 +419,8 @@ def _stand_in_capturing(got):
     def stand_in(goal_type, spec, *, corpus, settings, guidance, prior_draft,
                  provider, model, budget_chars, max_rounds, max_llm_calls,
                  alchemy_run_id, tools=None, llm=None, should_cancel=None,
-                 coverage="search", prior_sections=None, prior_ledger=None,
-                 on_progress=None):
+                 coverage="search", include_generated=False, prior_sections=None,
+                 prior_ledger=None, on_progress=None):
         got["budget_chars"] = budget_chars
         return FakeResult()
     return stand_in
@@ -523,3 +523,61 @@ def test_execute_no_artifacts_when_result_has_none(tmp_path):
         n = s.query(db.AlchemyArtifact).filter(
             db.AlchemyArtifact.run_id == rid).count()
         assert n == 0
+
+
+def _fake_ra_alchemy(monkeypatch):
+    """Stub research_agent's provider/client/budget and alchemy.run_goal so
+    _default_run_goal can be exercised offline. Returns the dict the fake
+    CliToolProvider records its argv into."""
+    import research_agent
+    import alchemy
+    seen = {}
+
+    class FakeTools:
+        def __init__(self, argv):
+            seen["argv"] = argv
+
+    monkeypatch.setattr(research_agent, "CliToolProvider", FakeTools)
+    monkeypatch.setattr(research_agent, "AnyLlmClient", lambda ep: object())
+    monkeypatch.setattr(research_agent, "LlmEndpoint", lambda **kw: object())
+    monkeypatch.setattr(research_agent, "RunBudget", lambda **kw: object())
+    monkeypatch.setattr(alchemy, "run_goal", lambda *a, **kw: "RESULT")
+    return seen
+
+
+def _call_default(include_generated):
+    return alchemy_exec._default_run_goal(
+        "living-research", {"goal": "g"}, corpus="c",
+        settings=Settings.from_env(), guidance=None, prior_draft=None,
+        provider="p", model="m", budget_chars=1000, max_rounds=3,
+        max_llm_calls=None, alchemy_run_id=1,
+        include_generated=include_generated)
+
+
+def test_default_run_goal_bakes_exclude_generated(monkeypatch):
+    seen = _fake_ra_alchemy(monkeypatch)
+    out = _call_default(include_generated=False)
+    assert out == "RESULT"
+    assert "--exclude-generated" in seen["argv"]
+
+
+def test_default_run_goal_opt_in_keeps_generated(monkeypatch):
+    seen = _fake_ra_alchemy(monkeypatch)
+    _call_default(include_generated=True)
+    assert "--exclude-generated" not in seen["argv"]
+
+
+def test_execute_forwards_goal_include_generated(tmp_path, monkeypatch):
+    """execute_alchemy_run's real-path lambda must pass goal.include_generated
+    into _default_run_goal. Patch the module-level function to capture it."""
+    rid = _seed(tmp_path)                       # goal.include_generated -> False
+    captured = {}
+
+    def fake_default(goal_type, spec, **kw):
+        captured["include_generated"] = kw.get("include_generated")
+        return FakeResult()
+
+    monkeypatch.setattr(alchemy_exec, "_default_run_goal", fake_default)
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env())
+    assert captured["include_generated"] is False
