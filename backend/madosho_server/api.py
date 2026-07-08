@@ -1954,10 +1954,26 @@ def _ingest_run_draft(session, settings, enqueue, enqueue_build,
         origin_meta={"goal": goal.name, "version": run.version, "run_id": run.id})
     # Rung-2 artifact row: an inspectable record that this run produced a doc.
     # (Digest indexing / corpus memory later reuses the same kind="ingest" shape.)
-    session.add(db.AlchemyArtifact(
-        run_id=run.id, goal_id=goal.id, kind="ingest",
-        key=f"ingest-v{run.version}", document_id=doc.id,
-        payload={"corpus_id": corpus_id, "filename": doc.filename}))
+    # _ingest_bytes dedupes the DOCUMENT by content hash, so re-ingesting the
+    # same run (calling this endpoint twice, or finalize --ingest after a
+    # standalone ingest) returns the SAME doc, not a new one. If we always
+    # `add()` here, that second call mints a second kind="ingest" row pointing
+    # at the same document, which corrupts artifact_counts (status would show
+    # "2 ingest" for one document). The invariant is "at most one ingest
+    # artifact per run" - so check for an existing row first and update it in
+    # place instead of inserting a duplicate.
+    existing = session.scalars(
+        select(db.AlchemyArtifact)
+        .where(db.AlchemyArtifact.run_id == run.id,
+               db.AlchemyArtifact.kind == "ingest")).first()
+    if existing is not None:
+        existing.document_id = doc.id
+        existing.payload = {"corpus_id": corpus_id, "filename": doc.filename}
+    else:
+        session.add(db.AlchemyArtifact(
+            run_id=run.id, goal_id=goal.id, kind="ingest",
+            key=f"ingest-v{run.version}", document_id=doc.id,
+            payload={"corpus_id": corpus_id, "filename": doc.filename}))
     # Stamp a new dict (not in-place mutate) so SQLAlchemy flags the JSON column
     # dirty and persists it.
     run.config = {**(run.config or {}), "ingested_document_id": doc.id}

@@ -539,6 +539,23 @@ def test_ingest_route_creates_generated_document(tmp_path, monkeypatch):
         assert len(arts) == 1 and arts[0].document_id == body["id"]
 
 
+def test_ingest_route_twice_is_idempotent(tmp_path, monkeypatch):
+    # _ingest_bytes dedupes the DOCUMENT by content hash, so calling this
+    # endpoint again for the same run returns the same document - the
+    # bookkeeping artifact row must not double up alongside it.
+    client, _ = _client(tmp_path)
+    _ingest_ready(client, tmp_path, monkeypatch)
+    first = client.post("/alchemy/goals/find_vuln/runs/1/ingest", json={})
+    second = client.post("/alchemy/goals/find_vuln/runs/1/ingest", json={})
+    assert first.status_code == 202 and second.status_code == 202
+    assert first.json()["id"] == second.json()["id"]   # same deduped document
+    with db.SessionLocal() as s:
+        arts = s.query(db.AlchemyArtifact).filter(
+            db.AlchemyArtifact.kind == "ingest").all()
+        assert len(arts) == 1
+        assert arts[0].document_id == second.json()["id"]
+
+
 def test_ingest_route_defaults_to_goal_corpus(tmp_path, monkeypatch):
     client, _ = _client(tmp_path)
     _ingest_ready(client, tmp_path, monkeypatch)
@@ -579,3 +596,21 @@ def test_finalize_without_ingest_does_not_create_doc(tmp_path, monkeypatch):
     client.post("/alchemy/goals/find_vuln/finalize", json={"version": 1})
     run = client.get("/alchemy/goals/find_vuln/runs/1").json()
     assert run["ingested_document_id"] is None
+
+
+def test_finalize_ingest_after_standalone_ingest_is_idempotent(tmp_path, monkeypatch):
+    # A standalone /ingest followed by finalize --ingest on the same run walks
+    # _ingest_run_draft twice; the resulting document is the same deduped row,
+    # and the "this run produced doc N" bookkeeping must stay at one row.
+    client, _ = _client(tmp_path)
+    _ingest_ready(client, tmp_path, monkeypatch)
+    standalone = client.post("/alchemy/goals/find_vuln/runs/1/ingest", json={})
+    finalized = client.post("/alchemy/goals/find_vuln/finalize",
+                            json={"version": 1, "ingest": True})
+    assert standalone.status_code == 202 and finalized.status_code == 200
+    assert finalized.json()["ingested_document_id"] == standalone.json()["id"]
+    with db.SessionLocal() as s:
+        arts = s.query(db.AlchemyArtifact).filter(
+            db.AlchemyArtifact.kind == "ingest").all()
+        assert len(arts) == 1
+        assert arts[0].document_id == standalone.json()["id"]
