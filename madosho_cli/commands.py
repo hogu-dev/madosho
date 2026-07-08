@@ -54,7 +54,11 @@ def cmd_list_documents(args: argparse.Namespace) -> int:
         if not docs:
             print("(no documents)")
         for d in docs:
-            print(f"{d['id']:>4}  {d['status']:<10}  {d['filename']}")
+            # origin_label is carried verbatim from the API row (the formula
+            # lives once, in provenance.origin_label) -- source rows have "".
+            label = d.get("origin_label") or ""
+            suffix = f"  {label}" if label else ""
+            print(f"{d['id']:>4}  {d['status']:<10}  {d['filename']}{suffix}")
     return 0
 
 

@@ -223,6 +223,8 @@ class LibraryDocumentRead(BaseModel):
     rating: float | None = None
     error: str | None = None
     progress: dict = {}   # live build feed of the building pipeline while indexing
+    origin: str = "source"        # provenance (stage D), mirrors DocumentRead
+    origin_label: str = ""        # human suffix, e.g. "[generated: find_vuln v2]"
 
 
 class JobRead(BaseModel):
@@ -1202,7 +1204,8 @@ def list_library_documents(session: SessionDep):
         out.append(LibraryDocumentRead(
             id=doc.id, filename=doc.filename, status=doc.status,
             selected_pipeline_id=doc.selected_pipeline_id, corpora=chips, rating=rating,
-            error=doc.error, progress=progress))
+            error=doc.error, progress=progress,
+            origin=doc.origin, origin_label=doc.origin_label))
     return out
 
 
@@ -1386,6 +1389,7 @@ def get_document(document_id: int, session: SessionDep):
     return DocumentDetailRead(
         id=doc.id, filename=doc.filename, status=doc.status, error=doc.error,
         progress=doc.progress or {}, selected_pipeline_id=doc.selected_pipeline_id,
+        origin=doc.origin, origin_label=doc.origin_label,
         corpora=chips)
 
 

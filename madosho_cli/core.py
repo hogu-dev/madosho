@@ -132,6 +132,8 @@ def list_documents(corpus: str) -> dict[str, Any]:
             "filename": d["filename"],
             "status": d["status"],
             "selected_pipeline_id": d.get("selected_pipeline_id"),
+            "origin": d.get("origin", "source"),
+            "origin_label": d.get("origin_label", ""),
         }
         for d in rows
     ]

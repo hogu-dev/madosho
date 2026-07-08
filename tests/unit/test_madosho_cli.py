@@ -116,7 +116,7 @@ def test_list_documents_resolves_name(fake_http, capsys):
     assert [d["id"] for d in out["documents"]] == [3, 4]
     assert out["documents"][0] == {
         "id": 3, "filename": "afti.pdf", "status": "indexed",
-        "selected_pipeline_id": None,
+        "selected_pipeline_id": None, "origin": "source", "origin_label": "",
     }
     assert out["documents"][1]["selected_pipeline_id"] == 10
 
@@ -126,6 +126,44 @@ def test_list_documents_unknown_corpus_errors(fake_http, capsys):
     rc = cli_main.main(["list-documents", "nope", "--json"])
     assert rc == 1
     assert "corpus not found" in capsys.readouterr().err
+
+
+def test_list_documents_prints_generated_suffix(fake_http, capsys):
+    # Stage D: a generated doc's human-readable row gets a "[generated: ...]"
+    # suffix carried verbatim from the API's origin_label (no CLI-side
+    # formula) - a source row is unaffected.
+    fake_http({
+        "/corpora": [{"id": 2, "name": "reports", "config": {}}],
+        "/corpora/2/documents": [
+            {"id": 5, "filename": "src.pdf", "status": "indexed",
+             "selected_pipeline_id": None, "origin": "source",
+             "origin_label": ""},
+            {"id": 6, "filename": "find_vuln-v2.md", "status": "indexed",
+             "selected_pipeline_id": None, "origin": "generated",
+             "origin_label": "[generated: find_vuln v2]"},
+        ],
+    })
+    rc = cli_main.main(["list-documents", "reports"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "find_vuln-v2.md  [generated: find_vuln v2]" in out
+    assert "src.pdf" in out
+    assert "src.pdf  [generated" not in out    # source row has no suffix
+
+
+def test_list_documents_json_carries_origin(fake_http, capsys):
+    fake_http({
+        "/corpora": [{"id": 2, "name": "reports", "config": {}}],
+        "/corpora/2/documents": [
+            {"id": 6, "filename": "g.md", "status": "indexed",
+             "selected_pipeline_id": None, "origin": "generated",
+             "origin_label": "[generated: g v1]"},
+        ],
+    })
+    cli_main.main(["list-documents", "reports", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["documents"][0]["origin"] == "generated"
+    assert out["documents"][0]["origin_label"] == "[generated: g v1]"
 
 
 def _hit(i):
