@@ -214,3 +214,34 @@ def test_shim_error_is_openai_shaped(env):
                         json={"model": "ghost", "messages": [{"role": "user", "content": "hi"}]})
         assert r.status_code == 404
         assert r.json()["error"]["type"] == "invalid_request_error"   # shim convention
+
+
+# ---------------------------------------------------------------------------
+# Provenance labels on hits (Stage D, Task 12)
+# ---------------------------------------------------------------------------
+
+def test_query_labels_generated_document_hits(env, monkeypatch):
+    with TestClient(query_api.app) as client:
+        _cid, did, _pid = _seed()
+        with db.SessionLocal() as s:
+            d = s.get(db.Document, did)
+            d.origin = "generated"
+            d.origin_meta = {"goal": "find_vuln", "version": 2}
+            s.commit()
+        monkeypatch.setattr(pipeline_cache, "corpus_for",
+                            lambda p, d: _FakeCorpus([_hit("evidence", page=1)]))
+        r = client.post("/query", json={"corpus": "demo", "prompt": "hi"})
+        hit = r.json()["hits"][0]
+        assert hit["origin"] == "generated"
+        assert hit["citation"].endswith("[generated: find_vuln v2]")
+
+
+def test_query_source_document_hits_unlabeled(env, monkeypatch):
+    with TestClient(query_api.app) as client:
+        _seed()                                   # origin defaults to source
+        monkeypatch.setattr(pipeline_cache, "corpus_for",
+                            lambda p, d: _FakeCorpus([_hit("plain", page=1)]))
+        r = client.post("/query", json={"corpus": "demo", "prompt": "hi"})
+        hit = r.json()["hits"][0]
+        assert hit["origin"] == "source"
+        assert "[generated" not in hit["citation"]

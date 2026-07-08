@@ -90,6 +90,7 @@ class Citation(BaseModel):
     position: int | None = None
     pipeline_id: int | None = None
     pipeline: str | None = None
+    origin: str | None = None    # provenance: "source" | "generated" (D-stage)
 
 
 class QueryHitsResponse(BaseModel):
@@ -177,9 +178,19 @@ def query(body: QueryRequest, session: SessionDep, settings: SettingsDep):
     except MadoshoError as e:
         raise HTTPException(status_code=400, detail=str(e))
     hits = [p.hit for p in ph]   # bare Hit list for generation; ph kept for pipeline-attributed citations
+    # Provenance labels: ONE lookup over the distinct hit documents (not one per
+    # hit) mapping document_id -> (origin, origin_meta), so a generated doc's
+    # chunks render "[generated: <goal> v<n>]" in their citation.
+    doc_ids = {p.document_id for p in ph}
+    origins: dict[int, tuple[str, dict]] = {}
+    if doc_ids:
+        rows = session.execute(
+            select(db.Document.id, db.Document.origin, db.Document.origin_meta)
+            .where(db.Document.id.in_(doc_ids))).all()
+        origins = {i: (o, m or {}) for i, o, m in rows}
 
     if not body.llm:
-        return {"hits": query_core.serialize_pipeline_hits(ph)}
+        return {"hits": query_core.serialize_pipeline_hits(ph, origins=origins)}
 
     resolved = _resolve_answer_llm(session, settings, body.llm)
     if resolved is None:
@@ -199,7 +210,7 @@ def query(body: QueryRequest, session: SessionDep, settings: SettingsDep):
     # uses internally with the same args, so this is identical — no drift.
     messages = query_core.augmented_messages(hits, user_messages)
     return {"answer": answer,
-            "citations": query_core.serialize_pipeline_hits(ph),
+            "citations": query_core.serialize_pipeline_hits(ph, origins=origins),
             "usage": usage, "messages": messages}
 
 

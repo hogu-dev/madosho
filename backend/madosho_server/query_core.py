@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from madosho.core.types import Hit, display_source
 from madosho_server import llm
+from madosho_server.provenance import origin_label
 
 DEFAULT_TEMPLATE = (
     "You are a helpful assistant. Use the following retrieved context to answer "
@@ -10,16 +11,27 @@ DEFAULT_TEMPLATE = (
 )
 
 
-def serialize_pipeline_hits(pipeline_hits: list) -> list[dict]:
-    """Serialize PipelineHit objects (retrieval.multi_pipeline_query output) for the
-    HTTP response. Citations carry document_id AND pipeline attribution (D14)."""
+def serialize_pipeline_hits(pipeline_hits: list, origins=None) -> list[dict]:
+    """Serialize PipelineHit objects (retrieval.multi_pipeline_query output) for
+    the HTTP response. Citations carry document_id AND pipeline attribution
+    (D14). `origins` maps document_id -> (origin, origin_meta); when a hit's
+    document is 'generated', its provenance suffix is appended to the citation
+    STRING (so it flows to agents/MCP/toolserver, which copy the string
+    verbatim) and set as the structured `origin` field. Missing/None -> every
+    doc treated as source (label empty, output unchanged)."""
+    origins = origins or {}
     out = []
     for ph in pipeline_hits:
         h = ph.hit
+        origin, meta = origins.get(ph.document_id, ("source", {}))
+        suffix = origin_label(origin, meta)
+        citation = f"{h.citation} {suffix}" if suffix else h.citation
         out.append({"text": h.text, "score": h.score, "page": h.chunk.page,
-                    "citation": h.citation, "source": display_source(h.chunk.metadata.get("source")),
+                    "citation": citation,
+                    "source": display_source(h.chunk.metadata.get("source")),
                     "document_id": ph.document_id, "position": h.chunk.position,
-                    "pipeline_id": ph.pipeline_id, "pipeline": ph.pipeline_name})
+                    "pipeline_id": ph.pipeline_id, "pipeline": ph.pipeline_name,
+                    "origin": origin})
     return out
 
 
