@@ -574,3 +574,46 @@ def test_alchemy_status_shows_artifact_counts(fake_http, capsys):
     out = capsys.readouterr().out
     assert "artifacts:" in out
     assert "2 digest" in out and "1 handoff" in out
+
+
+def test_alchemy_ingest_posts_to_run_ingest(fake_http):
+    fh = fake_http({
+        "/alchemy/goals/find_vuln/runs/2/ingest":
+            {"id": 42, "filename": "find_vuln-v2.md", "status": "received",
+             "origin": "generated", "origin_label": "[generated: find_vuln v2]"},
+    })
+    rc = cli_main.main(["alchemy", "ingest", "find_vuln", "--run", "2",
+                        "--corpus", "reports", "--json"])
+    assert rc == 0
+    method, url, body = fh.calls[-1]
+    assert method == "POST"
+    assert url.endswith("/alchemy/goals/find_vuln/runs/2/ingest")
+    assert body == {"corpus": "reports"}
+
+
+def test_alchemy_ingest_defaults_to_latest_run(fake_http):
+    fh = fake_http({
+        # runs list (newest first) resolves the latest version
+        "/alchemy/goals/find_vuln/runs": [_run(version=3, status="done")],
+        "/alchemy/goals/find_vuln/runs/3/ingest":
+            {"id": 7, "filename": "find_vuln-v3.md", "status": "received",
+             "origin": "generated"},
+    })
+    rc = cli_main.main(["alchemy", "ingest", "find_vuln", "--json"])
+    assert rc == 0
+    _, url, body = fh.calls[-1]
+    assert url.endswith("/alchemy/goals/find_vuln/runs/3/ingest")
+    assert body == {}                       # no --corpus -> empty body
+
+
+def test_alchemy_finalize_forwards_ingest_flag(fake_http):
+    fh = fake_http({
+        "/alchemy/goals/find_vuln/finalize":
+            _run(version=1, status="done", is_final=True,
+                 ingested_document_id=9),
+    })
+    cli_main.main(["alchemy", "finalize", "find_vuln", "--run", "1",
+                   "--ingest", "--json"])
+    _, url, body = fh.calls[-1]
+    assert url.endswith("/alchemy/goals/find_vuln/finalize")
+    assert body == {"version": 1, "ingest": True}

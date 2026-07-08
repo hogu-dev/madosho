@@ -505,3 +505,77 @@ def test_delete_goal_removes_artifacts(tmp_path):
     assert client.delete("/alchemy/goals/find_vuln").status_code == 200
     with db.SessionLocal() as s:
         assert s.query(db.AlchemyArtifact).count() == 0
+
+
+def _ingest_ready(client, tmp_path, monkeypatch):
+    """A goal with a done v1 (draft landed), plus the enqueue/filestore seams
+    stubbed so the ingest path can create a real library row under sqlite."""
+    monkeypatch.setenv("FILESTORE_DIR", str(tmp_path / "fs"))
+    api.app.dependency_overrides[api.get_enqueue] = lambda: (lambda s, i: None)
+    api.app.dependency_overrides[api.get_enqueue_build_pipeline] = lambda: (lambda s, i: None)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    client.post("/alchemy/goals/find_vuln/runs",
+                json={"llm": {"provider": "openai", "model": "m"}})
+    _land_run(1)
+    return cid
+
+
+def test_ingest_route_creates_generated_document(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path)
+    _ingest_ready(client, tmp_path, monkeypatch)
+    r = client.post("/alchemy/goals/find_vuln/runs/1/ingest", json={})
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["origin"] == "generated"
+    assert body["filename"] == "find_vuln-v1.md"
+    assert body["origin_label"] == "[generated: find_vuln v1]"
+    # the run records the produced document id, and an artifact row exists
+    run = client.get("/alchemy/goals/find_vuln/runs/1").json()
+    assert run["ingested_document_id"] == body["id"]
+    with db.SessionLocal() as s:
+        arts = s.query(db.AlchemyArtifact).filter(
+            db.AlchemyArtifact.kind == "ingest").all()
+        assert len(arts) == 1 and arts[0].document_id == body["id"]
+
+
+def test_ingest_route_defaults_to_goal_corpus(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path)
+    _ingest_ready(client, tmp_path, monkeypatch)
+    r = client.post("/alchemy/goals/find_vuln/runs/1/ingest", json={})
+    did = r.json()["id"]
+    chips = client.get(f"/documents/{did}").json()["corpora"]
+    assert any(c["name"] == "secdocs" for c in chips)   # the goal's corpus
+
+
+def test_ingest_route_pending_run_409(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path)
+    monkeypatch.setenv("FILESTORE_DIR", str(tmp_path / "fs"))
+    api.app.dependency_overrides[api.get_enqueue] = lambda: (lambda s, i: None)
+    api.app.dependency_overrides[api.get_enqueue_build_pipeline] = lambda: (lambda s, i: None)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    client.post("/alchemy/goals/find_vuln/runs",
+                json={"llm": {"provider": "openai", "model": "m"}})
+    # no _land_run -> still pending
+    r = client.post("/alchemy/goals/find_vuln/runs/1/ingest", json={})
+    assert r.status_code == 409
+
+
+def test_finalize_with_ingest_creates_generated_doc(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path)
+    _ingest_ready(client, tmp_path, monkeypatch)
+    r = client.post("/alchemy/goals/find_vuln/finalize",
+                    json={"version": 1, "ingest": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["is_final"] is True
+    assert body["ingested_document_id"] is not None
+
+
+def test_finalize_without_ingest_does_not_create_doc(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path)
+    _ingest_ready(client, tmp_path, monkeypatch)
+    client.post("/alchemy/goals/find_vuln/finalize", json={"version": 1})
+    run = client.get("/alchemy/goals/find_vuln/runs/1").json()
+    assert run["ingested_document_id"] is None

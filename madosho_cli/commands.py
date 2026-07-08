@@ -410,8 +410,21 @@ def cmd_alchemy_export(args: argparse.Namespace) -> int:
 
 
 def cmd_alchemy_finalize(args: argparse.Namespace) -> int:
-    data = core.alchemy_finalize(args.ref, args.run)
-    _emit_or_print(args, data, lambda d: f"finalized {args.ref} v{d['version']}")
+    data = core.alchemy_finalize(args.ref, args.run, ingest=args.ingest)
+    _emit_or_print(args, data, lambda d: f"finalized {args.ref} v{d['version']}"
+                                         + (" (ingested)" if args.ingest else ""))
+    return 0
+
+
+def cmd_alchemy_ingest(args: argparse.Namespace) -> int:
+    version = args.run or core.alchemy_latest_version(args.ref)
+    if version is None:
+        raise http.CliError(f"no runs for goal {args.ref}")
+    data = core.alchemy_ingest(args.ref, version, corpus=args.corpus)
+    _emit_or_print(
+        args, data,
+        lambda d: f"ingested {args.ref} v{version} -> document {d['id']} "
+                  f"({d.get('filename', '')})")
     return 0
 
 

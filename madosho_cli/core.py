@@ -322,10 +322,22 @@ def alchemy_list_artifacts(ref: str, version: int) -> list[dict[str, Any]]:
         f"{http.control_base()}/alchemy/goals/{ref}/runs/{version}/artifacts")
 
 
-def alchemy_finalize(ref: str, version: int) -> dict[str, Any]:
+def alchemy_finalize(ref: str, version: int,
+                     ingest: bool = False) -> dict[str, Any]:
+    body: dict[str, Any] = {"version": version}
+    if ingest:
+        body["ingest"] = True
     return http.post_json(
-        f"{http.control_base()}/alchemy/goals/{ref}/finalize",
-        {"version": version})
+        f"{http.control_base()}/alchemy/goals/{ref}/finalize", body)
+
+
+def alchemy_ingest(ref: str, version: int,
+                   corpus: str | None = None) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    if corpus:
+        body["corpus"] = corpus
+    return http.post_json(
+        f"{http.control_base()}/alchemy/goals/{ref}/runs/{version}/ingest", body)
 
 
 def alchemy_cancel(run_id: int) -> dict[str, Any]:

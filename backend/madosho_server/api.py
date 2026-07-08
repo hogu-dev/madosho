@@ -199,6 +199,8 @@ class DocumentRead(BaseModel):
     error: str | None = None
     progress: dict = {}   # live ingest feed: {phase, started_at, page_count, log:[{t,msg}]}
     selected_pipeline_id: int | None = None   # G: saved effective-pipeline override
+    origin: str = "source"        # "source" (upload) | "generated" (alchemy ingest-back)
+    origin_label: str = ""        # human suffix, e.g. "[generated: find_vuln v2]"; "" for source
 
 
 class CorpusChip(BaseModel):
@@ -659,6 +661,13 @@ class AlchemyRunLaunch(BaseModel):
 
 class AlchemyFinalize(BaseModel):
     version: int
+    ingest: bool = False        # also ingest the draft as a generated document
+
+
+class AlchemyIngest(BaseModel):
+    """Ingest a run's draft back as a generated library document.
+    corpus (by name) overrides the goal's own corpus as the target."""
+    corpus: str | None = None
 
 
 class AlchemyRunRead(BaseModel):
@@ -673,6 +682,7 @@ class AlchemyRunRead(BaseModel):
     stop_reason: str | None = None
     usage: dict | None = None
     is_final: bool = False
+    ingested_document_id: int | None = None   # set once a draft is ingested back
     error: str | None = None
     created_at: str | None = None
     finished_at: str | None = None
@@ -704,6 +714,7 @@ class AlchemyRunList(BaseModel):
     stop_reason: str | None = None
     usage: dict | None = None
     is_final: bool = False
+    ingested_document_id: int | None = None   # set once a draft is ingested back
     error: str | None = None
     created_at: str | None = None
     finished_at: str | None = None
@@ -1894,6 +1905,7 @@ def _alchemy_run_dict(r: "db.AlchemyRun", with_draft: bool = False) -> dict:
          "status": r.status, "coverage": r.coverage, "guidance": r.guidance,
          "based_on_version": r.based_on_version, "progress": r.progress,
          "stop_reason": r.stop_reason, "usage": r.usage, "is_final": r.is_final,
+         "ingested_document_id": (r.config or {}).get("ingested_document_id"),
          "error": r.error, "created_at": _iso(r.created_at),
          "finished_at": _iso(r.finished_at)}
     if with_draft:
@@ -1917,6 +1929,41 @@ def _resolve_goal(session, ref: str):
         g = session.scalars(select(db.AlchemyGoal)
                             .where(db.AlchemyGoal.name == ref)).first()
     return g
+
+
+def _ingest_run_draft(session, settings, enqueue, enqueue_build,
+                      goal, run, corpus_id) -> db.Document:
+    """Ingest a completed run's draft as a generated library document, record
+    the linkage, and return the document. Shared by the explicit ingest
+    endpoint and finalize's --ingest opt-in so the guard and the bookkeeping
+    cannot drift. Same 409 guard finalize uses: an unfinished or empty draft is
+    not a deliverable, so it is not ingestable either."""
+    if run.status != "done" or not (run.draft_markdown or "").strip():
+        raise HTTPException(
+            status_code=409,
+            detail="only a completed run with a draft can be ingested")
+    # origin_meta names the source run so every downstream hit/citation/row can
+    # render "[generated: <goal> v<version>]" (see provenance.origin_label).
+    doc = _ingest_bytes(
+        session, settings, enqueue, enqueue_build,
+        content=run.draft_markdown.encode("utf-8"),
+        filename=f"{goal.name}-v{run.version}.md",
+        mimetype="text/markdown", corpus_id=corpus_id,
+        parser=None, chunker=None, embedder=None, name=None, options=None,
+        origin="generated",
+        origin_meta={"goal": goal.name, "version": run.version, "run_id": run.id})
+    # Rung-2 artifact row: an inspectable record that this run produced a doc.
+    # (Digest indexing / corpus memory later reuses the same kind="ingest" shape.)
+    session.add(db.AlchemyArtifact(
+        run_id=run.id, goal_id=goal.id, kind="ingest",
+        key=f"ingest-v{run.version}", document_id=doc.id,
+        payload={"corpus_id": corpus_id, "filename": doc.filename}))
+    # Stamp a new dict (not in-place mutate) so SQLAlchemy flags the JSON column
+    # dirty and persists it.
+    run.config = {**(run.config or {}), "ingested_document_id": doc.id}
+    session.commit()
+    session.refresh(doc)
+    return doc
 
 
 def _proposal_dict(p: "db.ConfigProposal") -> dict:
@@ -2178,8 +2225,32 @@ def list_alchemy_artifacts(ref: str, version: int, session: SessionDep):
     return [_alchemy_artifact_dict(a) for a in rows]
 
 
+@app.post("/alchemy/goals/{ref}/runs/{version}/ingest",
+          response_model=DocumentRead, status_code=202)
+def ingest_alchemy_run(ref: str, version: int, body: AlchemyIngest,
+                       session: SessionDep, settings: SettingsDep,
+                       enqueue: EnqueueDep, enqueue_build: BuildPipelineEnqueueDep):
+    """Ingest a run's draft back into the library as a generated document
+    (origin='generated'). Default target corpus = the goal's own corpus,
+    overridable by name."""
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    run = session.scalars(select(db.AlchemyRun)
+                          .where(db.AlchemyRun.goal_id == g.id,
+                                 db.AlchemyRun.version == version)).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="run version not found")
+    corpus_id = (_resolve_corpus_id_or_404(session, body.corpus)
+                 if body.corpus else g.corpus_id)
+    return _ingest_run_draft(session, settings, enqueue, enqueue_build,
+                             g, run, corpus_id)
+
+
 @app.post("/alchemy/goals/{ref}/finalize", response_model=AlchemyRunRead)
-def finalize_alchemy_run(ref: str, body: AlchemyFinalize, session: SessionDep):
+def finalize_alchemy_run(ref: str, body: AlchemyFinalize, session: SessionDep,
+                         settings: SettingsDep, enqueue: EnqueueDep,
+                         enqueue_build: BuildPipelineEnqueueDep):
     g = _resolve_goal(session, ref)
     if g is None:
         raise HTTPException(status_code=404, detail="goal not found")
@@ -2196,6 +2267,11 @@ def finalize_alchemy_run(ref: str, body: AlchemyFinalize, session: SessionDep):
         raise HTTPException(
             status_code=409,
             detail="only a completed run with a draft can be finalized")
+    # Opt-in ingest FIRST (shares finalize's guard). finalize must not silently
+    # mutate the document set, so this only fires when the caller asks.
+    if body.ingest:
+        _ingest_run_draft(session, settings, enqueue, enqueue_build,
+                          g, run, g.corpus_id)
     # one final version at a time: clear any prior final on this goal
     session.query(db.AlchemyRun).filter(
         db.AlchemyRun.goal_id == g.id, db.AlchemyRun.is_final == True).update(  # noqa: E712

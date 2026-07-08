@@ -211,8 +211,20 @@ def build_parser() -> argparse.ArgumentParser:
     p = alch_sub.add_parser("finalize", help="mark a version final")
     p.add_argument("ref")
     p.add_argument("--run", type=int, required=True, help="version to finalize")
+    p.add_argument("--ingest", action="store_true",
+                   help="also ingest the draft as a generated document")
     _add_json(p)
     p.set_defaults(func=commands.cmd_alchemy_finalize)
+
+    p = alch_sub.add_parser(
+        "ingest", help="ingest a run's draft as a generated document")
+    p.add_argument("ref")
+    p.add_argument("--run", type=int, default=None,
+                   help="version (default: latest)")
+    p.add_argument("--corpus", default=None,
+                   help="target corpus (default: the goal's corpus)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_ingest)
 
     p = alch_sub.add_parser("list", help="list goals")
     _add_json(p)
