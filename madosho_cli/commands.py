@@ -309,11 +309,19 @@ def cmd_alchemy_create(args: argparse.Namespace) -> int:
 
 
 def cmd_alchemy_run(args: argparse.Namespace) -> int:
+    # both-or-neither: a lone --provider (or --model) is a typo, not a request
+    # for the server's default endpoint - fail fast here instead of burning a
+    # 400 round-trip (same reject-don't-ignore stance as cmd_alchemy_create)
+    if (args.provider is None) != (args.model is None):
+        raise http.CliError(
+            "--provider and --model must be given together "
+            "(omit both to use the server's default LLM endpoint)")
     data = core.alchemy_run(args.ref, args.provider, args.model,
                             coverage=args.coverage, guidance=args.guidance,
                             based_on_version=args.based_on,
                             max_llm_calls=args.max_llm_calls,
-                            fresh_coverage=args.fresh_coverage)
+                            fresh_coverage=args.fresh_coverage,
+                            concurrency=args.concurrency)
     version = data["version"]
     if args.no_wait:
         _emit_or_print(args, data, lambda d: f"started {args.ref} v{d['version']} (pending)")

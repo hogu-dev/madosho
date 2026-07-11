@@ -499,6 +499,55 @@ def test_alchemy_run_passes_coverage_and_fresh_flag(fake_http):
     assert body["fresh_coverage"] is True
 
 
+def test_run_goal_concurrency_flag(fake_http):
+    fh = fake_http({
+        "/alchemy/goals/find_vuln/runs": _run(version=1, status="pending"),
+    })
+    rc = cli_main.main(["alchemy", "run", "find_vuln", "--provider", "openai",
+                        "--model", "m", "--concurrency", "4",
+                        "--no-wait", "--json"])
+    assert rc == 0
+    _, _, body = fh.calls[-1]
+    assert body["concurrency"] == 4
+
+
+def test_run_goal_default_concurrency_is_1(fake_http):
+    # no flag -> core supplies the same default the API itself defaults to
+    # (concurrency=1), matching the budget_chars/max_rounds idiom
+    fh = fake_http({
+        "/alchemy/goals/find_vuln/runs": _run(version=1, status="pending"),
+    })
+    cli_main.main(["alchemy", "run", "find_vuln", "--provider", "openai",
+                   "--model", "m", "--no-wait", "--json"])
+    _, _, body = fh.calls[-1]
+    assert body["concurrency"] == 1
+
+
+def test_run_goal_omits_llm_for_default_endpoint(fake_http):
+    """No --provider/--model -> the POST body carries NO llm key at all (the
+    pinned wire shape, not {'provider': None}); the server then resolves its
+    default LLM endpoint (stage E fallback)."""
+    fh = fake_http({
+        "/alchemy/goals/find_vuln/runs": _run(version=1, status="pending"),
+    })
+    rc = cli_main.main(["alchemy", "run", "find_vuln", "--no-wait", "--json"])
+    assert rc == 0
+    _, url, body = fh.calls[-1]
+    assert url.endswith("/alchemy/goals/find_vuln/runs")
+    assert "llm" not in body
+
+
+def test_run_goal_provider_without_model_errors(fake_http, capsys):
+    # both-or-neither: a lone --provider is a typo, not a request for the
+    # server default; fail fast in the CLI instead of a 400 round-trip
+    fake_http({})
+    rc = cli_main.main(["alchemy", "run", "find_vuln", "--provider", "openai",
+                        "--no-wait"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--provider" in err and "--model" in err
+
+
 def test_alchemy_create_accepts_full_coverage(fake_http):
     fh = fake_http({
         "/corpora": [{"id": 3, "name": "secdocs", "config": {}}],

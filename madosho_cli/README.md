@@ -116,9 +116,9 @@ versioned, exportable drafts. CLI-only in this release (not on MCP/toolserver).
 
 ```
 madosho-cli alchemy create <name> --corpus NAME --goal TEXT [--coverage search|full|exhaustive] [--json]
-madosho-cli alchemy run <ref> --provider P --model M [--coverage search|full|exhaustive]
+madosho-cli alchemy run <ref> [--provider P --model M] [--coverage search|full|exhaustive]
             [--fresh-coverage] [--guidance TEXT] [--based-on VERSION]
-            [--max-llm-calls N] [--no-wait] [--json]
+            [--max-llm-calls N] [--concurrency N] [--no-wait] [--json]
 madosho-cli alchemy status <ref> [--run VERSION] [--json]
 madosho-cli alchemy export <ref> [--run VERSION] [-o FILE]
 madosho-cli alchemy finalize <ref> --run VERSION [--json]
@@ -134,6 +134,10 @@ madosho-cli alchemy cancel <run_id> [--json]
   pass `--no-wait` to return immediately with the pending run and poll
   yourself with `status`. `--based-on` picks which prior version to revise;
   default is the goal's latest version that has a draft.
+- `run` uses the server's **default LLM endpoint** when `--provider`/`--model`
+  are omitted (pass both to pick a specific one; passing only one is an
+  error). `--concurrency N` runs up to N work units in parallel (1-8,
+  default 1); sections of a report goal are the units that parallelize.
 - `export`/`status` default `--run` to the goal's latest run if omitted.
 - `finalize` marks one version as the goal's canonical output (clears any
   prior final version on that goal).

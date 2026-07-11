@@ -295,13 +295,21 @@ def alchemy_create(name: str, corpus: str, spec: dict[str, Any],
     return http.post_json(f"{http.control_base()}/alchemy/goals", payload)
 
 
-def alchemy_run(ref: str, provider: str, model: str, *, coverage: str | None = None,
+def alchemy_run(ref: str, provider: str | None = None, model: str | None = None,
+                *, coverage: str | None = None,
                 guidance: str | None = None, based_on_version: int | None = None,
                 budget_chars: int = 100_000, max_rounds: int = 8,
                 max_llm_calls: int | None = None,
-                fresh_coverage: bool = False) -> dict[str, Any]:
-    payload: dict[str, Any] = {"llm": {"provider": provider, "model": model},
-                               "budget_chars": budget_chars, "max_rounds": max_rounds}
+                fresh_coverage: bool = False,
+                concurrency: int = 1) -> dict[str, Any]:
+    payload: dict[str, Any] = {"budget_chars": budget_chars,
+                               "max_rounds": max_rounds,
+                               "concurrency": concurrency}
+    if provider is not None or model is not None:
+        payload["llm"] = {"provider": provider, "model": model}
+    # else: NO llm key at all -> the server resolves its default LLM endpoint
+    # (the pinned wire shape; sending {'provider': None} would 400 as a
+    # partial pair)
     if coverage:
         payload["coverage"] = coverage
     if guidance:

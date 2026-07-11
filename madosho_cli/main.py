@@ -183,8 +183,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = alch_sub.add_parser("run", help="start a run of a goal")
     p.add_argument("ref", help="goal name or id")
-    p.add_argument("--provider", required=True)
-    p.add_argument("--model", required=True)
+    p.add_argument("--provider", default=None,
+                   help="LLM provider (with --model; omit both to use the "
+                        "server's default LLM endpoint)")
+    p.add_argument("--model", default=None,
+                   help="LLM model (with --provider; omit both to use the "
+                        "server's default LLM endpoint)")
     p.add_argument("--coverage", default=None,
                    choices=["search", "full", "exhaustive"])
     p.add_argument("--fresh-coverage", action="store_true",
@@ -194,6 +198,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--based-on", dest="based_on", type=int, default=None,
                    help="version to revise (default: latest with a draft)")
     p.add_argument("--max-llm-calls", dest="max_llm_calls", type=int, default=None)
+    p.add_argument("--concurrency", type=int, default=1,
+                   help="parallel work units per run (1-8, default 1)")
     p.add_argument("--no-wait", dest="no_wait", action="store_true")
     _add_json(p)
     p.set_defaults(func=commands.cmd_alchemy_run)
