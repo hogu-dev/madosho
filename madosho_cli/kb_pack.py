@@ -16,6 +16,23 @@ class KbPackError(Exception):
     """The path is not a usable llmkb KB."""
 
 
+def _scalar(raw: str) -> str:
+    """Minimal YAML scalar cleanup for kb.yaml's flat lines: drop an inline
+    comment on an unquoted value, then strip surrounding quotes. Enough for
+    name/format; madosho-cli stays PyYAML-free."""
+    v = raw.strip()
+    if v[:1] in ("\"", "'"):
+        # Quoted value: find the closing quote, discard everything after
+        quote = v[0]
+        end = v.find(quote, 1)
+        if end != -1:
+            v = v[:end+1]
+    elif "#" in v:
+        # Unquoted value: strip inline comment
+        v = v.split("#", 1)[0].strip()
+    return v.strip("\"'").strip()
+
+
 def _read_identity(kb_dir: Path) -> dict:
     cfg = kb_dir / "kb.yaml"
     if not cfg.exists():
@@ -25,9 +42,9 @@ def _read_identity(kb_dir: Path) -> dict:
     for line in cfg.read_text(encoding="utf-8").splitlines():
         s = line.strip()
         if s.startswith("name:"):
-            name = s[len("name:"):].strip().strip("\"'")
+            name = _scalar(s[len("name:"):])
         elif s.startswith("format:"):
-            val = s[len("format:"):].strip()
+            val = _scalar(s[len("format:"):])
             fmt = int(val) if val.isdigit() else val
     if not name:
         raise KbPackError(f"kb.yaml in {kb_dir} has no 'name'")

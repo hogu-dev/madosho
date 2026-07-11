@@ -33,3 +33,12 @@ def test_pack_kb_bad_format(tmp_path):
     (tmp_path / "kb.yaml").write_text("name: x\nformat: 2\n")
     with pytest.raises(kb_pack.KbPackError):
         kb_pack.pack_kb(tmp_path)
+
+
+def test_pack_kb_quoted_and_commented_format(tmp_path):
+    kb = _make_kb(tmp_path / "demo-kb")
+    # overwrite kb.yaml with a quoted name and a quoted, comment-suffixed format
+    (kb / "kb.yaml").write_text('name: "demo-kb"\nformat: "1"  # schema v1\n')
+    filename, content = kb_pack.pack_kb(kb)
+    assert filename == "demo-kb.md"
+    assert "Alpha body here." in content
