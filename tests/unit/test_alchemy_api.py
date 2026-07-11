@@ -453,6 +453,45 @@ def test_run_launch_rejects_unknown_coverage(tmp_path):
     assert r.status_code == 422
 
 
+def test_run_launch_concurrency_rides_config(tmp_path):
+    """The per-run concurrency knob (stage E) lands in run.config for the
+    worker; the run row itself needs no schema change."""
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    r = client.post("/alchemy/goals/find_vuln/runs", json={
+        "llm": {"provider": "openai", "model": "m"}, "concurrency": 4})
+    assert r.status_code == 201, r.text
+    with db.SessionLocal() as s:
+        run = s.get(db.AlchemyRun, r.json()["id"])
+        assert run.config["concurrency"] == 4
+
+
+def test_run_launch_concurrency_defaults_to_1(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    r = client.post("/alchemy/goals/find_vuln/runs",
+                    json={"llm": {"provider": "openai", "model": "m"}})
+    assert r.status_code == 201, r.text
+    with db.SessionLocal() as s:
+        run = s.get(db.AlchemyRun, r.json()["id"])
+        assert run.config["concurrency"] == 1
+
+
+def test_run_launch_concurrency_out_of_bounds_422(tmp_path):
+    """Field(ge=1, le=8): 0 (meaningless) and 9 (beyond the parallelism cap)
+    are rejected at the API edge, the same way max_llm_calls=0 is."""
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    for bad in (0, 9):
+        r = client.post("/alchemy/goals/find_vuln/runs",
+                        json={"llm": {"provider": "openai", "model": "m"},
+                              "concurrency": bad})
+        assert r.status_code == 422, f"concurrency={bad}: {r.text}"
+
+
 def _seed_artifacts(rid):
     """Simulate the worker landing artifacts on run `rid` (marks it done)."""
     with db.SessionLocal() as s:

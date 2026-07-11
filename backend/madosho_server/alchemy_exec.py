@@ -46,6 +46,7 @@ def _default_run_goal(goal_type, spec, *, corpus, settings, guidance,
                       prior_draft, provider, model, budget_chars, max_rounds,
                       max_llm_calls, alchemy_run_id, coverage="search",
                       include_generated: bool = False,
+                      concurrency: int = 1,
                       prior_sections=None, prior_ledger=None,
                       on_progress=None, tools=None, llm=None,
                       should_cancel=None):
@@ -85,6 +86,7 @@ def _default_run_goal(goal_type, spec, *, corpus, settings, guidance,
                             prior_sections=prior_sections,
                             prior_ledger=prior_ledger,
                             max_llm_calls=max_llm_calls,
+                            concurrency=concurrency,
                             should_cancel=_make_cancel_check(alchemy_run_id),
                             on_progress=on_progress)
 
@@ -196,6 +198,7 @@ def execute_alchemy_run(session, alchemy_run_id: int, settings,
         budget_chars=budget_chars,
         max_rounds=cfg.get("max_rounds", 8),
         max_llm_calls=cfg.get("max_llm_calls"),
+        concurrency=cfg.get("concurrency", 1),
         include_generated=goal.include_generated,
         alchemy_run_id=alchemy_run_id, **kw))
     try:

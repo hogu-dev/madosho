@@ -107,7 +107,8 @@ def test_execute_real_path_wrapper_call_shape(tmp_path, monkeypatch):
     def stand_in(goal_type, spec, *, corpus, settings, guidance, prior_draft,
                  provider, model, budget_chars, max_rounds, max_llm_calls,
                  alchemy_run_id, tools=None, llm=None, should_cancel=None,
-                 coverage="search", include_generated=False, prior_sections=None,
+                 coverage="search", include_generated=False, concurrency=1,
+                 prior_sections=None,
                  prior_ledger=None, on_progress=None):
         got.update(tools=tools, llm=llm, should_cancel=should_cancel,
                    budget_chars=budget_chars, max_rounds=max_rounds,
@@ -419,7 +420,8 @@ def _stand_in_capturing(got):
     def stand_in(goal_type, spec, *, corpus, settings, guidance, prior_draft,
                  provider, model, budget_chars, max_rounds, max_llm_calls,
                  alchemy_run_id, tools=None, llm=None, should_cancel=None,
-                 coverage="search", include_generated=False, prior_sections=None,
+                 coverage="search", include_generated=False, concurrency=1,
+                 prior_sections=None,
                  prior_ledger=None, on_progress=None):
         got["budget_chars"] = budget_chars
         return FakeResult()
@@ -581,3 +583,63 @@ def test_execute_forwards_goal_include_generated(tmp_path, monkeypatch):
     with db.SessionLocal() as s:
         alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env())
     assert captured["include_generated"] is False
+
+
+def test_exec_passes_concurrency_to_real_path(tmp_path, monkeypatch):
+    """execute_alchemy_run's real-path lambda must thread config['concurrency']
+    into _default_run_goal, same as budget_chars/max_rounds/max_llm_calls."""
+    rid = _seed(tmp_path)
+    with db.SessionLocal() as s:
+        run = s.get(db.AlchemyRun, rid)
+        run.config = {"llm": {"provider": "p", "model": "m"},
+                      "budget_chars": 5000, "max_rounds": 3,
+                      "concurrency": 3}
+        s.commit()
+    got = {}
+
+    def fake_default(goal_type, spec, **kw):
+        got["concurrency"] = kw.get("concurrency")
+        return FakeResult()
+
+    monkeypatch.setattr(alchemy_exec, "_default_run_goal", fake_default)
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env())
+        assert s.get(db.AlchemyRun, rid).status == "done"
+    assert got["concurrency"] == 3
+
+
+def test_exec_concurrency_defaults_to_1_for_old_configs(tmp_path, monkeypatch):
+    """A pre-stage-E run row (no concurrency key in config) keeps today's
+    serial behavior: the lambda's cfg.get default is 1."""
+    rid = _seed(tmp_path)   # _seed writes no concurrency key
+    got = {}
+
+    def fake_default(goal_type, spec, **kw):
+        got["concurrency"] = kw.get("concurrency")
+        return FakeResult()
+
+    monkeypatch.setattr(alchemy_exec, "_default_run_goal", fake_default)
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env())
+    assert got["concurrency"] == 1
+
+
+def test_default_run_goal_forwards_concurrency(monkeypatch):
+    """_default_run_goal hands concurrency straight to alchemy.run_goal (the
+    engine slice's kwarg); everything else about the call is stubbed."""
+    _fake_ra_alchemy(monkeypatch)
+    import alchemy
+    got = {}
+
+    def capture_run_goal(*a, **kw):
+        got.update(kw)
+        return "RESULT"
+
+    monkeypatch.setattr(alchemy, "run_goal", capture_run_goal)
+    out = alchemy_exec._default_run_goal(
+        "living-research", {"goal": "g"}, corpus="c",
+        settings=Settings.from_env(), guidance=None, prior_draft=None,
+        provider="p", model="m", budget_chars=1000, max_rounds=3,
+        max_llm_calls=None, alchemy_run_id=1, concurrency=5)
+    assert out == "RESULT"
+    assert got["concurrency"] == 5

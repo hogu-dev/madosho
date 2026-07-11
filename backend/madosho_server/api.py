@@ -661,6 +661,7 @@ class AlchemyRunLaunch(BaseModel):
     budget_chars: int = 100_000
     max_rounds: int = 8
     max_llm_calls: int | None = Field(default=None, ge=1)  # optional self-cap for rate-limited upstreams
+    concurrency: int = Field(default=1, ge=1, le=8)         # parallel work units per run (stage E); 1 = today's serial path
 
 
 class AlchemyFinalize(BaseModel):
@@ -2191,7 +2192,8 @@ def start_alchemy_run(ref: str, body: AlchemyRunLaunch, session: SessionDep,
         config={"llm": body.llm, "budget_chars": body.budget_chars,
                 "max_rounds": body.max_rounds,
                 "max_llm_calls": body.max_llm_calls,
-                "fresh_coverage": body.fresh_coverage})
+                "fresh_coverage": body.fresh_coverage,
+                "concurrency": body.concurrency})
     session.add(run)
     session.flush()
     enqueue(session, run.id)
