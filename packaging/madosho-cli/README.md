@@ -13,7 +13,8 @@ madosho-cli --help
 madosho-cli search <corpus> "<query>" --json
 ```
 
-Point it at your server with `--base-url` (default `http://localhost:8000`) and, if the
-server has auth enabled, `--api-key` / `MADOSHO_API_KEY`.
+Point it at your server with the `MADOSHO_CONTROL_URL` (default `http://localhost:8000`)
+and `MADOSHO_QUERY_URL` (default `http://localhost:8001`) environment variables, and — if
+the server has auth enabled — `MADOSHO_API_KEY`.
 
 Apache-2.0.
