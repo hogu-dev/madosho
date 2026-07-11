@@ -307,3 +307,111 @@ export type UserRow = {
   created_at: string | null;
   last_login_at: string | null;
 };
+
+// ---- Alchemy: named/versioned autonomous goals over a corpus ----------------
+// Goals are created via the CLI (madosho alchemy create); the web UI is a
+// viewer with light actions (run / cancel / finalize).
+
+export interface AlchemyGoal {
+  id: number;
+  name: string;
+  corpus_id: number;
+  goal_type: string;                       // e.g. living-research | report
+  spec: Record<string, unknown>;
+  coverage: "search" | "full" | "exhaustive";
+  include_generated: boolean;
+  created_at: string | null;
+}
+
+export interface AlchemyUsage {
+  llm_calls?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}
+
+export type AlchemyRunStatus = "pending" | "running" | "done" | "failed" | "cancelled";
+
+// One row of a goal's runs table (GET /alchemy/goals/{ref}/runs, version desc).
+export interface AlchemyRunSummary {
+  id: number;                              // DB run id -- cancel takes THIS, not the version
+  goal_id: number;
+  version: number;
+  status: AlchemyRunStatus;
+  coverage: string;
+  guidance: string | null;
+  based_on_version: number | null;
+  stop_reason: string | null;              // final|round_cap|no_tools_used|cancelled|failed|call_cap
+  usage: AlchemyUsage | null;
+  is_final: boolean;
+  ingested_document_id: number | null;     // set once a draft is ingested back
+  error: string | null;
+  created_at: string | null;
+  finished_at: string | null;
+}
+
+export interface AlchemySectionConfidence {
+  level: "low" | "medium" | "high";
+  self_grade?: number | null;
+  distinct_docs?: number;
+  citations?: number;
+  coverage_complete?: boolean;
+}
+
+export interface AlchemySection {
+  key: string;
+  title: string;
+  content: string;
+  filled: boolean;
+  note?: string | null;                    // why a section stayed unfilled
+  confidence?: AlchemySectionConfidence | null;
+  stop_reason?: string | null;
+  llm_calls?: number;
+}
+
+// Coverage ledger: which corpus docs the run consulted and how.
+export interface AlchemyLedger {
+  mode: string;
+  total_docs: number;
+  consulted: Record<string, "search" | "forced" | "read">;
+  from_prior: number[];
+  unconsulted: number[];
+  failures: Record<string, string>;
+  complete: boolean;
+  shortfall?: string | null;               // honest-shortfall note when coverage fell short
+  summary?: string | null;
+}
+
+export interface AlchemyCitation {
+  document_id: number | null;
+  pipeline_id: number | null;
+  pipeline: string | null;
+  position: number | null;
+  citation: string;
+  source: string | null;
+  score: number | null;
+  quote: string;
+}
+
+// Full run payload (single-run GET / launch / finalize responses).
+export interface AlchemyRun extends AlchemyRunSummary {
+  draft_markdown: string | null;
+  citations: AlchemyCitation[] | null;
+  run_log: Record<string, unknown>[] | null;
+  sections: AlchemySection[] | null;
+  ledger: AlchemyLedger | null;
+  artifact_counts: Record<string, number> | null;
+  progress: { phase?: string } | null;
+}
+
+export interface AlchemyRunLaunch {
+  coverage?: "search" | "full" | "exhaustive";   // omitted = the goal's own coverage
+  guidance?: string;
+  based_on_version?: number;
+  fresh_coverage?: boolean;
+  llm: { provider: string; model: string };
+  budget_chars?: number;
+  max_rounds?: number;
+  max_llm_calls?: number;
+  concurrency?: number;   // 1-8; a parallel stage-E slice adds it server-side (default 1)
+}

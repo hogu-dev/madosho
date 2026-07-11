@@ -1,4 +1,4 @@
-import type { Artifacts, AuthMe, Comparison, Components, Corpus, CorpusMember, CreatedPipeline, Cube, DocPipeline, Document, EvalLaunch, EvalRun, ExtractDiff, ExtractDivergence, Job, LibraryDocument, LlmEndpoint, LlmEndpointInput, PipelineConfig, PipelineCreate, Proposal, QueryResult, RatingsConfig, RecommendedPipeline, ResearchLaunch, ResearchRun, UserRow, VirtualModel } from "./types";
+import type { AlchemyGoal, AlchemyRun, AlchemyRunLaunch, AlchemyRunSummary, Artifacts, AuthMe, Comparison, Components, Corpus, CorpusMember, CreatedPipeline, Cube, DocPipeline, Document, EvalLaunch, EvalRun, ExtractDiff, ExtractDivergence, Job, LibraryDocument, LlmEndpoint, LlmEndpointInput, PipelineConfig, PipelineCreate, Proposal, QueryResult, RatingsConfig, RecommendedPipeline, ResearchLaunch, ResearchRun, UserRow, VirtualModel } from "./types";
 
 export type ApiKeyRow = {
   name: string; prefix: string; scope: "read" | "write" | "admin";
@@ -147,6 +147,21 @@ export const api = {
     req<Proposal>(`/corpora/${corpusId}/proposal`).catch(() => null),
   dismissProposal: (proposalId: number) =>
     req<{ status: string }>(`/proposals/${proposalId}/dismiss`, { method: "POST" }),
+
+  // Alchemy: goals are created via the CLI; the UI is a viewer with light actions.
+  listAlchemyGoals: () => req<AlchemyGoal[]>("/alchemy/goals"),
+  getAlchemyGoal: (ref: number | string) => req<AlchemyGoal>(`/alchemy/goals/${ref}`),
+  listAlchemyRuns: (ref: number | string) =>
+    req<AlchemyRunSummary[]>(`/alchemy/goals/${ref}/runs`),
+  getAlchemyRun: (ref: number | string, version: number) =>
+    req<AlchemyRun>(`/alchemy/goals/${ref}/runs/${version}`),
+  launchAlchemyRun: (ref: number | string, body: AlchemyRunLaunch) =>
+    req<AlchemyRun>(`/alchemy/goals/${ref}/runs`, json(body)),
+  // Cancel takes the run's DB id (AlchemyRunSummary.id), NOT the version number.
+  cancelAlchemyRun: (runId: number) =>
+    req<{ status: string }>(`/alchemy/runs/${runId}/cancel`, { method: "POST" }),
+  finalizeAlchemyRun: (ref: number | string, version: number, ingest = false) =>
+    req<AlchemyRun>(`/alchemy/goals/${ref}/finalize`, json({ version, ingest })),
 
   login: (key: string) => req<{ scope: string; name: string }>("/auth/login", json({ key })),
   loginPassword: (username: string, password: string) =>
