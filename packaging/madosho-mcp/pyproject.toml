@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "madosho-mcp"
+version = "0.1.0"
+description = "MCP server exposing a madosho RAG corpus as retrieval tools."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+# mcp keeps its deliberate <2 cap (breaking changes across majors). madosho-cli
+# supplies the shared orchestration core this server delegates to.
+dependencies = ["mcp>=1.8,<2", "madosho-cli>=0.1.0"]
+
+[project.urls]
+Homepage = "https://github.com/hogu-dev/madosho"
+Repository = "https://github.com/hogu-dev/madosho"
+
+[project.scripts]
+madosho-mcp = "madosho_mcp.server:run"
+
+# Wheel-only, in-place source — see the madosho-cli pyproject for the rationale.
+[tool.hatch.build.targets.wheel.force-include]
+"../../madosho_mcp" = "madosho_mcp"
