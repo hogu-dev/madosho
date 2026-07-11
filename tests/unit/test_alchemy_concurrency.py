@@ -298,3 +298,110 @@ def test_parallel_quota_is_presplit_not_greedy():
     assert [s.llm_calls for s in result.sections] == [5, 5]
     assert all(s.filled for s in result.sections)
     assert result.stop_reason == "final"   # filled via forced synthesis, no bubble
+
+
+# --- C4: proof battery ----------------------------------------------------
+
+
+def test_two_units_run_in_flight_simultaneously():
+    # Each unit makes exactly ONE llm call; every call waits at a 2-party
+    # barrier before answering. Only a genuinely parallel run has two calls
+    # in flight to release each other. A sequential run would deadlock -
+    # the barrier's timeout turns that into BrokenBarrierError (surfacing
+    # as 'unit failed' sections and a failing assert), not a hung test.
+    class BarrierLlm:
+        def __init__(self):
+            self.barrier = threading.Barrier(2)
+
+        def complete(self, messages, tools):
+            self.barrier.wait(timeout=10)
+            user = [m for m in messages if m["role"] == "user"][0]["content"]
+            if "Section to fill: Summary" in user:
+                return AssistantTurn(text="sum body\n\nCONFIDENCE: low",
+                                     usage=None)
+            return AssistantTurn(text="june body\n\nCONFIDENCE: low",
+                                 usage=None)
+
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=ConcurrencyTools(),
+        llm=BarrierLlm(), budget=RunBudget(), concurrency=2)
+    assert result.stop_reason == "final"
+    assert all(s.filled for s in result.sections)
+    assert result.sections[0].content == "sum body"
+    assert result.sections[1].content == "june body"
+
+
+def test_assembly_is_section_ordered_even_when_completion_reverses():
+    class ReversedFinishLlm:
+        """June answers FIRST (proven via an Event); Summary refuses to answer
+        until June already has. Completion order is thereby pinned to the
+        REVERSE of section order - assembly must not care."""
+        def __init__(self):
+            self.june_done = threading.Event()
+
+        def complete(self, messages, tools):
+            user = [m for m in messages if m["role"] == "user"][0]["content"]
+            if "Section to fill: June incidents" in user:
+                self.june_done.set()
+                return AssistantTurn(text="june body\n\nCONFIDENCE: low",
+                                     usage=None)
+            assert self.june_done.wait(timeout=10), "june never finished"
+            return AssistantTurn(text="sum body\n\nCONFIDENCE: low",
+                                 usage=None)
+
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=ConcurrencyTools(),
+        llm=ReversedFinishLlm(), budget=RunBudget(), concurrency=2)
+    assert result.stop_reason == "final"
+    # draft sections land in TEMPLATE order regardless of completion order
+    assert result.markdown.index("## Summary") < result.markdown.index("## June incidents")
+    assert result.markdown.index("sum body") < result.markdown.index("june body")
+    # run_log entries too: each unit made one call, folded in section order
+    assert [e["section"] for e in result.run_log] == ["summary",
+                                                      "june-incidents"]
+
+
+class CrashSummaryLlm:
+    """Summary's unit raises on its first llm call; June's answers cleanly.
+    Keyed by prompt content, so it does not care which unit calls first."""
+    def complete(self, messages, tools):
+        user = [m for m in messages if m["role"] == "user"][0]["content"]
+        if "Section to fill: Summary" in user:
+            raise RuntimeError("summary unit exploded")
+        return AssistantTurn(text="june body\n\nCONFIDENCE: low", usage=None)
+
+
+def test_unit_exception_isolated_to_its_section():
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=ConcurrencyTools(),
+        llm=CrashSummaryLlm(), budget=RunBudget(), concurrency=2)
+    assert result.stop_reason == "failed"
+    assert not result.sections[0].filled
+    assert result.sections[0].note.startswith("unit failed: RuntimeError")
+    assert "summary unit exploded" in result.sections[0].note
+    # the OTHER unit already ran - its section survives. This is the
+    # documented parallel divergence from sequential mode, where sections
+    # AFTER a crash are skipped; here they were already in flight and their
+    # landed work is kept (partial survival).
+    assert result.sections[1].filled
+    assert result.sections[1].content == "june body"
+    # the crashed call released its (atomic) cap slot: only june's counted
+    assert result.usage.llm_calls == 1
+
+
+def test_crashed_section_still_carries_prior():
+    prior = [{"key": "summary", "title": "Summary", "content": "old summary",
+              "filled": True, "confidence": {"level": "high",
+                                             "distinct_docs": 3,
+                                             "citations": 5}}]
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=ConcurrencyTools(),
+        llm=CrashSummaryLlm(), budget=RunBudget(), concurrency=2,
+        prior_sections=prior)
+    assert result.stop_reason == "failed"
+    summary = result.sections[0]
+    assert summary.filled and summary.content == "old summary"
+    assert summary.note.startswith(
+        "unit failed (carried prior, not revised): RuntimeError")
+    assert summary.confidence["level"] == "high"   # rides from the prior
+    assert result.sections[1].filled               # fresh june untouched
