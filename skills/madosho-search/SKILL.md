@@ -1,6 +1,6 @@
 ---
 name: madosho-search
-description: Use when you need to search or read documents in a madosho RAG corpus from the command line. Drives madosho-cli (search, search-doc, get-doc, list-corpora, list-documents, list-pipelines) to gather cited evidence and answer questions over indexed documents.
+description: Use when you need to search or read documents in a madosho RAG corpus from the command line, or to run and read madosho's autonomous alchemy goals. Drives madosho-cli (search, search-doc, get-doc, list-corpora, list-documents, list-pipelines, list-goals, goal-runs, export-goal-run, run-goal) to gather cited evidence and answer questions over indexed documents.
 ---
 
 # Drive madosho's document tools
@@ -38,6 +38,24 @@ JSON or empty, and any error prints to stderr with a non-zero exit.
   ...}, ...]}`. A document can have several pipelines (extraction/retrieval
   recipes); this lists their names so you can target one via `--pipeline`. Give
   exactly one of `--corpus` or `--document-id`.
+- `madosho-cli list-goals --json` -> `[{"id", "name", "corpus_id", "goal_type",
+  ...}, ...]`. Alchemy goals are named, versioned autonomous research/report
+  objectives over a corpus. Start here to find the goal name to pass to the
+  other goal tools.
+- `madosho-cli goal-runs <goal> --json` -> `[{"version", "status", "coverage",
+  "is_final", "stop_reason", "usage", ...}, ...]`, newest first. Poll this after
+  `run-goal`; a run is finished when its status is done, failed, or cancelled.
+- `madosho-cli export-goal-run <goal> --json` -> `{"goal", "version", "status",
+  "is_final", "stop_reason", "draft_markdown", "sections": [{"key", "title",
+  "filled", "confidence"}, ...], "citations"}`. One run's full draft text plus a
+  slim section summary (citations is a count). Defaults to the latest run; it
+  prints JSON and never writes files. Option: `--version N`.
+- `madosho-cli run-goal <goal> <max_llm_calls> --json` -> `{"version", "status",
+  ...}`. Starts a new run and returns immediately (needs a write-scoped key);
+  poll `goal-runs`, then fetch the draft with `export-goal-run`. The LLM-call
+  cap is required - never launch an uncapped run. Options: `--guidance <note>`,
+  `--coverage search|full|exhaustive`, `--provider <p>`, `--model <m>`
+  (provider/model default to the server's default LLM endpoint).
 
 ## How to work
 
