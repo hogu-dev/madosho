@@ -48,6 +48,7 @@ persist - run_goal's external shape is otherwise unchanged.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import research_agent
@@ -398,11 +399,16 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
              prior_ledger: dict | None = None,
              max_llm_calls: int | None = None,
              max_handoffs: int = _MAX_HANDOFFS,
+             concurrency: int = 1,
              should_cancel=None, on_progress=None) -> GoalRunResult:
     compiled = compile_spec(goal_type, spec)
     if coverage not in COVERAGE_MODES:
         raise ValueError(
             f"unknown coverage mode: {coverage!r} (supported: {COVERAGE_MODES})")
+    # concurrency fans out REPORT section units only; living-research is a
+    # single unit, so the knob is accepted and ignored on that path
+    if concurrency < 1:
+        raise ValueError(f"concurrency must be >= 1 (got {concurrency})")
     counting = CountingLlm(llm, max_calls=max_llm_calls)
     # the ledger exists for EVERY run: search mode gets the honest account
     # ("consulted N of M"), full/exhaustive add enforcement on top. Built
@@ -419,6 +425,7 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
                            prior_sections=prior_sections or [],
                            max_llm_calls=max_llm_calls,
                            max_handoffs=max_handoffs,
+                           concurrency=concurrency,
                            should_cancel=should_cancel,
                            on_progress=on_progress)
     # living-research: the stage-A single-unit path, deepened by coverage
@@ -558,9 +565,186 @@ def _carry_prior(res: SectionResult, prior: dict | None, shortfall: str) -> None
         res.note = f"carried from prior, not revised: {shortfall}"
 
 
+class _UnitLlm:
+    """Per-unit call attribution over the run's SHARED CountingLlm, for the
+    parallel path. complete() forwards to the shared counter (cap check and
+    token accounting stay global and atomic - C1); unit_calls counts only
+    THIS unit's spend, so SectionResult.llm_calls stays exact while the
+    shared counter advances under other threads (the sequential loop's
+    before/after delta would credit a section with its neighbors' calls).
+    max_calls/usage forward to the shared object so _run_unit_with_handoffs'
+    greedy allowance math keeps reading run-level truth. No lock of its own:
+    one unit == one thread (handoff chains stay sequential within a unit)."""
+
+    def __init__(self, shared):
+        self._shared = shared
+        self.unit_calls = 0
+
+    @property
+    def max_calls(self):
+        return self._shared.max_calls
+
+    @property
+    def usage(self):
+        return self._shared.usage
+
+    def complete(self, messages: list[dict], tools: list[dict]):
+        turn = self._shared.complete(messages, tools)
+        self.unit_calls += 1
+        return turn
+
+
+def _run_sections_parallel(compiled, results, *, corpus, tools, counting,
+                           budget, ledger, guidance, prior_by_key, report_md,
+                           digests_text, max_llm_calls, max_handoffs,
+                           should_cancel, on_progress, concurrency,
+                           citations, own_cits, run_log, artifacts):
+    """The concurrency>1 section phase: every section unit runs on a thread
+    pool instead of the sequential loop. Mirrors the sequential loop's
+    semantics with three deliberate differences:
+
+    - quotas are pre-split UPFRONT (max(_MIN_UNIT_CALLS, available // n))
+      instead of greedy-with-floor: a fast unit's unused quota is NOT
+      redistributed to slower ones (accepted simplification - sequential
+      mode keeps greedy). The floor can oversubscribe a tiny allowance;
+      the threadsafe CountingLlm cap is the backstop, exactly as the
+      sequential floor already relies on it.
+    - a unit failing/cancelling/capping does not stop units ALREADY running
+      (they observe the shared cap and should_cancel on their own next
+      call): their landed results are kept - partial survival, the same
+      principle sequential applies to earlier sections.
+    - assembly is deterministic: futures are folded into the accumulators
+      IN SECTION ORDER after each resolves, so citations, run_log,
+      artifacts and the rendered draft are order-stable no matter which
+      unit finished first.
+
+    Pre-flight halts (cancel already set, allowance below the floor) are
+    decided BEFORE any unit is submitted - carried sections never get
+    units, same as today. Mutates results and the accumulator lists in
+    place; returns (halted, round_cap_empty), the sequential loop's locals."""
+    if not results:
+        return None, False
+    halted: str | None = None
+    round_cap_empty = False
+
+    def _pre_halt(reason: str, first_note: str):
+        # nothing was submitted: mirror the sequential shape - the section
+        # that hit the stop wears the direct note, the rest read
+        # "skipped: ..."; every section still gets its carry-prior chance
+        for j, (sec, r) in enumerate(zip(compiled.sections, results)):
+            r.note = first_note if j == 0 else _skipped_note(reason)
+            _carry_prior(r, prior_by_key.get(sec.key),
+                         _SHORTFALL.get(reason, reason))
+        return reason, False
+
+    if should_cancel is not None and should_cancel():
+        return _pre_halt("cancelled", "cancelled")
+
+    unit_budget = budget
+    if max_llm_calls is not None:
+        available = max_llm_calls - counting.snapshot().llm_calls
+        if available < _MIN_UNIT_CALLS:
+            return _pre_halt("call_cap", "skipped: llm call cap")
+        quota = max(_MIN_UNIT_CALLS, available // len(results))
+        unit_budget = replace(budget, max_rounds=max(
+            1, min(budget.max_rounds, quota - 1)))
+
+    # warm the tool provider ONCE before fan-out: CliToolProvider populates
+    # its invocation table lazily on manifest(), and every unit's loop calls
+    # manifest() at start - warming here keeps N threads from racing the
+    # first population (research_agent stays frozen; the warm-up lives on
+    # this side of the seam). Best-effort: a failing manifest surfaces
+    # inside each unit as that section's own failure, never a run crash here.
+    try:
+        tools.manifest()
+    except Exception:
+        pass
+
+    def _unit(section, prior):
+        prompt = compose_section_prompt(
+            compiled.goal, section, corpus=corpus, guidance=guidance,
+            prior_content=(prior or {}).get("content"),
+            digests_text=digests_text)
+
+        def _continuation(partial, docs_covered, remaining, _section=section):
+            return compose_continuation_prompt(
+                compiled.goal, corpus=corpus, partial=partial,
+                docs_covered=docs_covered, remaining=remaining,
+                section=_section, guidance=guidance)
+
+        unit_llm = _UnitLlm(counting)
+        unit, unit_handoffs = _run_unit_with_handoffs(
+            prompt, tools=tools, llm=unit_llm, budget=unit_budget,
+            autonomous_md=report_md, should_cancel=should_cancel,
+            unit_key=section.key, ledger=ledger, max_handoffs=max_handoffs,
+            compose_continuation=_continuation)
+        return unit, unit_handoffs, unit_llm.unit_calls
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futs = []
+        for i, section in enumerate(compiled.sections):
+            if on_progress is not None:
+                on_progress({"phase": "running", "section": section.key,
+                             "sections_done": i,
+                             "sections_total": len(results)})
+            futs.append(pool.submit(_unit, section,
+                                    prior_by_key.get(section.key)))
+        # deterministic assembly: fold every unit's outcome into the shared
+        # accumulators IN SECTION ORDER, each after its own future resolves
+        for section, res, fut in zip(compiled.sections, results, futs):
+            prior = prior_by_key.get(section.key)
+            try:
+                unit, unit_handoffs, unit_calls = fut.result()
+            except CallCapExceeded:
+                # this unit tripped the (atomic) backstop mid-flight; its
+                # partial context dies, its section carries prior if any.
+                # llm_calls stays 0 - the unit wrapper died with the thread.
+                res.note = "llm call cap"
+                if halted is None:
+                    halted = "call_cap"
+                _carry_prior(res, prior, _SHORTFALL["call_cap"])
+                continue
+            except Exception as e:
+                # one unit crashing marks ONLY its own section (other units
+                # already ran or are running - keeping their results is the
+                # partial-survival guarantee); the run still reports "failed"
+                msg = f"{type(e).__name__}: {e}"[:200]
+                res.note = f"unit failed: {msg}"
+                if halted is None:
+                    halted = "failed"
+                _carry_prior(res, prior, _SHORTFALL["failed"])
+                continue
+            artifacts.extend(unit_handoffs)
+            res.llm_calls = unit_calls
+            res.stop_reason = unit.stop_reason
+            for entry in unit.run_log:
+                run_log.append({"section": res.key, **entry})
+            if unit.stop_reason == "cancelled":
+                res.note = "cancelled"
+                if halted is None:
+                    halted = "cancelled"
+                _carry_prior(res, prior, _SHORTFALL["cancelled"])
+                continue
+            content, grade = split_grade_marker(unit.markdown or "")
+            res.confidence = blend_confidence(grade, unit.citations)
+            own_cits[res.key] = list(unit.citations)
+            citations.extend(unit.citations)
+            if content.strip():
+                res.content = content
+                res.filled = True
+            else:
+                res.note = "no content produced"
+                # judge round_cap on the UNIT's own outcome, before any carry
+                # fills content - carry must not mask a genuine truncation
+                if unit.stop_reason == "round_cap":
+                    round_cap_empty = True
+                _carry_prior(res, prior, _SHORTFALL["no_content"])
+    return halted, round_cap_empty
+
+
 def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
                 ledger, guidance, prior_sections, max_llm_calls, max_handoffs,
-                should_cancel, on_progress):
+                concurrency=1, should_cancel, on_progress):
     # keep the FULL prior dicts (content + confidence), not just content: a
     # section that ends unfilled carries the prior's content and confidence
     prior_by_key = {p.get("key"): p for p in prior_sections}
@@ -597,100 +781,111 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
         digests_text = _digests_block(digests, ledger.corpus_docs) or None
         artifacts.extend(_digest_artifacts(digests, ledger.corpus_docs))
 
-    for i, (section, res) in enumerate(zip(compiled.sections, results)):
-        if halted is None and should_cancel is not None and should_cancel():
-            halted = "cancelled"
-            res.note = "cancelled"
-        if halted is not None:
-            res.note = res.note or _skipped_note(halted)
-            _carry_prior(res, prior_by_key.get(section.key),
-                         _SHORTFALL.get(halted, halted))
-            continue
-        unit_budget = budget
-        if max_llm_calls is not None:
-            remaining = max_llm_calls - counting.usage.llm_calls
-            if remaining < _MIN_UNIT_CALLS:
-                halted = "call_cap"
-                res.note = "skipped: llm call cap"
+    if concurrency > 1:
+        halted, round_cap_empty = _run_sections_parallel(
+            compiled, results, corpus=corpus, tools=tools, counting=counting,
+            budget=budget, ledger=ledger, guidance=guidance,
+            prior_by_key=prior_by_key, report_md=report_md,
+            digests_text=digests_text, max_llm_calls=max_llm_calls,
+            max_handoffs=max_handoffs, should_cancel=should_cancel,
+            on_progress=on_progress, concurrency=concurrency,
+            citations=citations, own_cits=own_cits, run_log=run_log,
+            artifacts=artifacts)
+    else:
+        for i, (section, res) in enumerate(zip(compiled.sections, results)):
+            if halted is None and should_cancel is not None and should_cancel():
+                halted = "cancelled"
+                res.note = "cancelled"
+            if halted is not None:
+                res.note = res.note or _skipped_note(halted)
                 _carry_prior(res, prior_by_key.get(section.key),
-                             _SHORTFALL["call_cap"])
+                             _SHORTFALL.get(halted, halted))
                 continue
-            # greedy-with-floor: every unit that runs gets at least the
-            # 2-call minimum; fair share only widens it (see module docstring)
-            quota = max(_MIN_UNIT_CALLS, remaining // (len(results) - i))
-            unit_budget = replace(budget, max_rounds=max(
-                1, min(budget.max_rounds, quota - 1)))
-        if on_progress is not None:
-            on_progress({"phase": "running", "section": res.key,
-                         "sections_done": i, "sections_total": len(results)})
-        prior = prior_by_key.get(section.key)
-        prompt = compose_section_prompt(
-            compiled.goal, section, corpus=corpus, guidance=guidance,
-            prior_content=(prior or {}).get("content"),
-            digests_text=digests_text)
-        calls_before = counting.usage.llm_calls
+            unit_budget = budget
+            if max_llm_calls is not None:
+                remaining = max_llm_calls - counting.usage.llm_calls
+                if remaining < _MIN_UNIT_CALLS:
+                    halted = "call_cap"
+                    res.note = "skipped: llm call cap"
+                    _carry_prior(res, prior_by_key.get(section.key),
+                                 _SHORTFALL["call_cap"])
+                    continue
+                # greedy-with-floor: every unit that runs gets at least the
+                # 2-call minimum; fair share only widens it (see module docstring)
+                quota = max(_MIN_UNIT_CALLS, remaining // (len(results) - i))
+                unit_budget = replace(budget, max_rounds=max(
+                    1, min(budget.max_rounds, quota - 1)))
+            if on_progress is not None:
+                on_progress({"phase": "running", "section": res.key,
+                             "sections_done": i, "sections_total": len(results)})
+            prior = prior_by_key.get(section.key)
+            prompt = compose_section_prompt(
+                compiled.goal, section, corpus=corpus, guidance=guidance,
+                prior_content=(prior or {}).get("content"),
+                digests_text=digests_text)
+            calls_before = counting.usage.llm_calls
 
-        def _section_continuation(partial, docs_covered, remaining,
-                                  _section=section):
-            # bind the section via a default arg: this closure outlives the
-            # loop iteration, and late binding would otherwise capture the LAST
-            # section for every continuation
-            return compose_continuation_prompt(
-                compiled.goal, corpus=corpus, partial=partial,
-                docs_covered=docs_covered, remaining=remaining,
-                section=_section, guidance=guidance)
+            def _section_continuation(partial, docs_covered, remaining,
+                                      _section=section):
+                # bind the section via a default arg: this closure outlives the
+                # loop iteration, and late binding would otherwise capture the LAST
+                # section for every continuation
+                return compose_continuation_prompt(
+                    compiled.goal, corpus=corpus, partial=partial,
+                    docs_covered=docs_covered, remaining=remaining,
+                    section=_section, guidance=guidance)
 
-        try:
-            unit, unit_handoffs = _run_unit_with_handoffs(
-                prompt, tools=tools, llm=counting, budget=unit_budget,
-                autonomous_md=report_md, should_cancel=should_cancel,
-                unit_key=section.key, ledger=ledger, max_handoffs=max_handoffs,
-                compose_continuation=_section_continuation)
-        except CallCapExceeded:
-            # backstop tripped mid-unit: the unit's partial context dies but
-            # every previously landed section survives - the whole point of
-            # farming out bounded units
-            res.note = "llm call cap"
+            try:
+                unit, unit_handoffs = _run_unit_with_handoffs(
+                    prompt, tools=tools, llm=counting, budget=unit_budget,
+                    autonomous_md=report_md, should_cancel=should_cancel,
+                    unit_key=section.key, ledger=ledger, max_handoffs=max_handoffs,
+                    compose_continuation=_section_continuation)
+            except CallCapExceeded:
+                # backstop tripped mid-unit: the unit's partial context dies but
+                # every previously landed section survives - the whole point of
+                # farming out bounded units
+                res.note = "llm call cap"
+                res.llm_calls = counting.usage.llm_calls - calls_before
+                halted = "call_cap"
+                _carry_prior(res, prior, _SHORTFALL["call_cap"])
+                continue
+            except Exception as e:
+                # a unit crashing (a bad tool, a provider error, a malformed reply)
+                # halts the run but must NOT discard sections that already landed -
+                # the same partial-survival guarantee the call cap gives. The
+                # message is truncated so a giant provider error can't bloat the
+                # note (String(16) stop column holds only "failed").
+                msg = f"{type(e).__name__}: {e}"[:200]
+                res.note = f"unit failed: {msg}"
+                res.llm_calls = counting.usage.llm_calls - calls_before
+                halted = "failed"
+                _carry_prior(res, prior, _SHORTFALL["failed"])
+                continue
+            artifacts.extend(unit_handoffs)
             res.llm_calls = counting.usage.llm_calls - calls_before
-            halted = "call_cap"
-            _carry_prior(res, prior, _SHORTFALL["call_cap"])
-            continue
-        except Exception as e:
-            # a unit crashing (a bad tool, a provider error, a malformed reply)
-            # halts the run but must NOT discard sections that already landed -
-            # the same partial-survival guarantee the call cap gives. The
-            # message is truncated so a giant provider error can't bloat the
-            # note (String(16) stop column holds only "failed").
-            msg = f"{type(e).__name__}: {e}"[:200]
-            res.note = f"unit failed: {msg}"
-            res.llm_calls = counting.usage.llm_calls - calls_before
-            halted = "failed"
-            _carry_prior(res, prior, _SHORTFALL["failed"])
-            continue
-        artifacts.extend(unit_handoffs)
-        res.llm_calls = counting.usage.llm_calls - calls_before
-        res.stop_reason = unit.stop_reason
-        for entry in unit.run_log:
-            run_log.append({"section": res.key, **entry})
-        if unit.stop_reason == "cancelled":
-            res.note = "cancelled"
-            halted = "cancelled"
-            _carry_prior(res, prior, _SHORTFALL["cancelled"])
-            continue
-        content, grade = split_grade_marker(unit.markdown or "")
-        res.confidence = blend_confidence(grade, unit.citations)
-        own_cits[res.key] = list(unit.citations)
-        citations.extend(unit.citations)
-        if content.strip():
-            res.content = content
-            res.filled = True
-        else:
-            res.note = "no content produced"
-            # judge round_cap on the UNIT's own outcome, before any carry
-            # fills content - carry must not mask a genuine truncation
-            if unit.stop_reason == "round_cap":
-                round_cap_empty = True
-            _carry_prior(res, prior, _SHORTFALL["no_content"])
+            res.stop_reason = unit.stop_reason
+            for entry in unit.run_log:
+                run_log.append({"section": res.key, **entry})
+            if unit.stop_reason == "cancelled":
+                res.note = "cancelled"
+                halted = "cancelled"
+                _carry_prior(res, prior, _SHORTFALL["cancelled"])
+                continue
+            content, grade = split_grade_marker(unit.markdown or "")
+            res.confidence = blend_confidence(grade, unit.citations)
+            own_cits[res.key] = list(unit.citations)
+            citations.extend(unit.citations)
+            if content.strip():
+                res.content = content
+                res.filled = True
+            else:
+                res.note = "no content produced"
+                # judge round_cap on the UNIT's own outcome, before any carry
+                # fills content - carry must not mask a genuine truncation
+                if unit.stop_reason == "round_cap":
+                    round_cap_empty = True
+                _carry_prior(res, prior, _SHORTFALL["no_content"])
 
     if coverage == "full" and halted is None:
         forced_cits, forced_halt = _forced_pass(

@@ -8,8 +8,11 @@ interleavings the tests need to prove.
 import threading
 import time
 
+import pytest
+
+import alchemy
 from alchemy.llm import CallCapExceeded, CountingLlm
-from research_agent.types import AssistantTurn
+from research_agent.types import AssistantTurn, RunBudget, ToolCall, ToolResult, ToolSpec
 
 
 class SlowInner:
@@ -159,3 +162,139 @@ def test_concurrent_marks_keep_strongest_and_lose_none():
     assert all(ledger.consulted[i] == "read" for i in range(100))
     assert ledger.unconsulted() == []
     assert ledger.complete() is True
+
+
+# --- C3: run_goal concurrency param + parallel report path ----------------
+
+REPORT_SPEC = {"template": (
+    "# Vuln report\n\nAssess the corpus.\n\n"
+    "## Summary\n\nOne paragraph.\n\n"
+    "## June incidents\n\nList each incident.\n")}
+
+
+class ConcurrencyTools:
+    """Threadsafe fake tools: a 2-doc corpus listing (the ledger needs its
+    denominator) and a search that always hits doc 1."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.calls = []
+
+    def manifest(self):
+        return [ToolSpec(name="search", description="search corpus",
+                         parameters={"type": "object", "properties": {
+                             "corpus": {"type": "string"},
+                             "query": {"type": "string"}},
+                             "required": ["corpus", "query"]})]
+
+    def invoke(self, name, args):
+        with self._lock:
+            self.calls.append((name, args))
+        if name == "list-documents":
+            return ToolResult(ok=True, data={
+                "corpus": args.get("corpus"), "documents": [
+                    {"id": 1, "filename": "a.txt", "status": "indexed"},
+                    {"id": 2, "filename": "b.txt", "status": "indexed"}]})
+        return ToolResult(ok=True, data={"hits": [{
+            "document_id": 1, "pipeline_id": 2, "pipeline": "p",
+            "position": 0, "citation": "doc 1 @0", "source": "d.txt",
+            "score": 0.9, "text": "evidence text"}]})
+
+
+class SectionKeyedLlm:
+    """Concurrency-safe scripted llm: the reply keys off the section named in
+    the user prompt ('Section to fill: <title>'), never off call order -
+    order-keyed pop(0) fakes are meaningless once two units interleave."""
+    def __init__(self, replies: dict[str, str]):
+        self.replies = dict(replies)
+
+    def complete(self, messages, tools):
+        user = [m for m in messages if m["role"] == "user"][0]["content"]
+        for title, reply in self.replies.items():
+            if f"Section to fill: {title}" in user:
+                return AssistantTurn(text=reply, usage=None)
+        raise AssertionError("no scripted reply matches prompt: " + user[:120])
+
+
+def test_concurrency_must_be_positive():
+    with pytest.raises(ValueError):
+        alchemy.run_goal("report", REPORT_SPEC, corpus="c",
+                         tools=ConcurrencyTools(), llm=SectionKeyedLlm({}),
+                         concurrency=0)
+
+
+def test_parallel_report_fills_all_sections_in_template_order():
+    events = []
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=ConcurrencyTools(),
+        llm=SectionKeyedLlm({
+            "Summary": "sum body\n\nCONFIDENCE: high",
+            "June incidents": "june body\n\nCONFIDENCE: medium"}),
+        budget=RunBudget(), concurrency=2, on_progress=events.append)
+    assert result.stop_reason == "final"
+    assert [s.key for s in result.sections] == ["summary", "june-incidents"]
+    assert all(s.filled for s in result.sections)
+    assert result.sections[0].content == "sum body"
+    assert result.sections[1].content == "june body"
+    assert result.markdown.index("sum body") < result.markdown.index("june body")
+    assert result.usage.llm_calls == 2
+    # per-section attribution stays exact via the per-unit wrapper
+    assert [s.llm_calls for s in result.sections] == [1, 1]
+    # progress events are emitted at submission, in section order
+    running = [e for e in events if e.get("phase") == "running"]
+    assert [e["section"] for e in running] == ["summary", "june-incidents"]
+
+
+def test_parallel_preflight_call_cap_skips_all_sections():
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=ConcurrencyTools(),
+        llm=SectionKeyedLlm({}), budget=RunBudget(), concurrency=2,
+        max_llm_calls=1)   # 1 < _MIN_UNIT_CALLS: nothing can run
+    assert result.stop_reason == "call_cap"
+    assert result.usage.llm_calls == 0
+    assert not any(s.filled for s in result.sections)
+    assert result.sections[0].note == "skipped: llm call cap"
+    assert result.sections[1].note == "skipped: llm call cap"
+
+
+def test_parallel_preflight_cancel_skips_all_sections():
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=ConcurrencyTools(),
+        llm=SectionKeyedLlm({}), budget=RunBudget(), concurrency=2,
+        should_cancel=lambda: True)
+    assert result.stop_reason == "cancelled"
+    assert result.usage.llm_calls == 0
+    # mirrors the sequential shape: first section wears the direct note
+    assert result.sections[0].note == "cancelled"
+    assert result.sections[1].note == "skipped: cancelled"
+
+
+def test_parallel_quota_is_presplit_not_greedy():
+    # cap=10, 2 sections: each unit gets quota max(2, 10//2)=5 upfront ->
+    # max_rounds min(8, 5-1)=4 -> 4 search rounds + forced synthesis =
+    # exactly 5 calls per unit, 10 total. A fast unit's unused quota is NOT
+    # redistributed (accepted simplification; sequential keeps greedy).
+    # max_handoffs=0 keeps round-capped units from spawning continuations
+    # that would race the cap nondeterministically.
+    class GreedySearcher:
+        def __init__(self):
+            self._lock = threading.Lock()
+            self.calls = 0
+
+        def complete(self, messages, tools):
+            with self._lock:
+                self.calls += 1
+                n = self.calls
+            if tools:
+                return AssistantTurn(text=None, tool_calls=[
+                    ToolCall(id=str(n), name="search",
+                             arguments={"corpus": "c", "query": "q"})])
+            return AssistantTurn(text="filled\n\nCONFIDENCE: low")
+
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=ConcurrencyTools(),
+        llm=GreedySearcher(), budget=RunBudget(), concurrency=2,
+        max_llm_calls=10, max_handoffs=0)
+    assert result.usage.llm_calls == 10
+    assert [s.llm_calls for s in result.sections] == [5, 5]
+    assert all(s.filled for s in result.sections)
+    assert result.stop_reason == "final"   # filled via forced synthesis, no bubble
