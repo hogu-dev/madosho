@@ -7,7 +7,7 @@ the madosho agent-tools manifest as MCP tool definitions and delegates every cal
 the shared `madosho-cli` orchestration core, so the CLI, the OpenAPI tool server, and
 this MCP server share one behavior and cannot drift.
 
-Pure HTTP client — imports nothing from the madosho kernel or server.
+Pure HTTP client - imports nothing from the madosho kernel or server.
 
 ```
 pip install madosho-mcp

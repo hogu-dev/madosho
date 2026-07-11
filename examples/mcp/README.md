@@ -22,7 +22,7 @@ VM).
 From a clone of this repo:
 
 ```
-pip install -e ".[mcp]"
+pip install madosho-mcp
 ```
 
 That pulls the `mcp` SDK (MIT) as a dependency and puts the `madosho-mcp` entry point
@@ -132,4 +132,4 @@ python mcp_demo.py --corpus contracts --query "termination clauses"
 ```
 
 Unlike the other example packs this one requires the `mcp` client SDK (it speaks the
-MCP protocol to the server); the `.[mcp]` extra above covers it.
+MCP protocol to the server); the `madosho-mcp` package installed above covers it.

@@ -288,18 +288,19 @@ corpora, upload, build pipelines over HTTP): `docs/HEADLESS.md`.
 
 madosho ships as three PyPI packages so you install only what you need:
 
-| Package | `pip install …` | Use it when you want to… |
+| Package | `pip install ...` | Use it when you want to... |
 |---|---|---|
 | **madosho-cli** | `madosho-cli` | drive a running madosho from the shell or an agent (zero dependencies) |
 | **madosho-mcp** | `madosho-mcp` | expose a madosho corpus to an MCP host (Claude Desktop, IDEs, agents) |
 | **madosho** | `madosho[server]` | run the full server/framework yourself |
 
-`madosho-cli` and `madosho-mcp` are lightweight HTTP clients — no server, no Postgres,
+`madosho-cli` and `madosho-mcp` are lightweight HTTP clients - no server, no Postgres,
 no model stack. The server package pulls `madosho-cli` in automatically.
 
 To run the full server or develop from source (Python >= 3.11):
 
 ```bash
+pip install ./packaging/madosho-cli   # the client dep; only a 0.0.1 placeholder is on PyPI so far
 pip install -e ".[local]"
 ```
 

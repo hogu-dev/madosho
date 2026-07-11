@@ -22,13 +22,18 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY backend ./backend
 COPY madosho_cli ./madosho_cli
-COPY madosho_mcp ./madosho_mcp
 COPY madosho_toolserver ./madosho_toolserver
 COPY research_agent ./research_agent
+COPY alchemy ./alchemy
+COPY packaging ./packaging
 # PIP_EXTRAS lets overlays widen the install without a second Dockerfile --
 # e.g. compose.ocr.yaml passes "ocr-easyocr" to add the easyocr engine.
 ARG PIP_EXTRAS=""
-RUN pip install ".[server,local,qdrant,container]" \
+# madosho-cli is a separate PyPI dist the server depends on (madosho_toolserver
+# imports it). Install it from the local packaging dir so the image builds
+# without waiting on the PyPI publish (only the 0.0.1 placeholder is up yet).
+RUN pip install ./packaging/madosho-cli \
+    && pip install ".[server,local,qdrant,container]" \
     && if [ -n "$PIP_EXTRAS" ]; then pip install ".[$PIP_EXTRAS]"; fi \
     # watchfiles powers the dev hot-reload loop: compose.override.yaml wraps each
     # service command in `watchfiles` so a bind-mounted code change restarts the
