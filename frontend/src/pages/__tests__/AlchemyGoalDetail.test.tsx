@@ -73,3 +73,54 @@ test("run rows link to the run detail by version", async () => {
   const v3 = await screen.findByText("v3");
   expect(v3.closest("a")).toHaveAttribute("href", "/alchemy/3/runs/3");
 });
+
+test("coverage toggle defaults to the goal's coverage", async () => {
+  renderPage();
+  await screen.findByRole("heading", { name: "sota-watch" });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Full" })).toHaveAttribute("aria-pressed", "true"));
+});
+
+test("model select defaults to the default endpoint; launch sends the payload and navigates", async () => {
+  const launch = vi.spyOn(api, "launchAlchemyRun").mockResolvedValue(
+    { id: 30, goal_id: 3, version: 4, status: "pending" } as any);
+  renderPage();
+  await screen.findByRole("option", { name: "granite-local" });
+  expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("granite-local");
+  fireEvent.change(screen.getByLabelText("Guidance"), { target: { value: "check the new PDFs" } });
+  fireEvent.change(screen.getByLabelText("Max LLM calls"), { target: { value: "40" } });
+  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  await waitFor(() => expect(launch).toHaveBeenCalled());
+  const [ref, body] = launch.mock.calls[0];
+  expect(ref).toBe(3);
+  expect(body).toEqual({ coverage: "full", guidance: "check the new PDFs", max_llm_calls: 40,
+    concurrency: 1, llm: { provider: "openai", model: "granite-4.1" } });
+  expect(await screen.findByText("run detail stub")).toBeInTheDocument();
+});
+
+test("cancel on a running run confirms then POSTs the DB id", async () => {
+  const cancel = vi.spyOn(api, "cancelAlchemyRun").mockResolvedValue({ status: "cancelled" });
+  renderPage();
+  const btn = await screen.findByRole("button", { name: "Cancel" });
+  fireEvent.click(btn);
+  expect(await screen.findByText("Cancel v3?")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
+  await waitFor(() => expect(cancel).toHaveBeenCalledWith(23));
+});
+
+test("finalize on a done non-final run confirms then finalizes that version", async () => {
+  const fin = vi.spyOn(api, "finalizeAlchemyRun").mockResolvedValue({} as any);
+  renderPage();
+  const btn = await screen.findByRole("button", { name: "Finalize" });  // only v2 qualifies
+  fireEvent.click(btn);
+  fireEvent.click(await screen.findByRole("button", { name: "Finalize v2" }));
+  await waitFor(() => expect(fin).toHaveBeenCalledWith("3", 2));
+});
+
+test("read-only scope disables all mutating buttons", async () => {
+  canWrite = false;
+  renderPage();
+  expect(await screen.findByRole("button", { name: "Run" })).toBeDisabled();
+  expect(await screen.findByRole("button", { name: "Cancel" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Finalize" })).toBeDisabled();
+});
