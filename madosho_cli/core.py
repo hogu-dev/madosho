@@ -369,6 +369,36 @@ def alchemy_latest_version(ref: str) -> int | None:
     return runs[0]["version"] if runs else None
 
 
+def alchemy_export_run(ref: str, version: int | None = None) -> dict[str, Any]:
+    """Slim agent-facing view of one run: the draft text plus a section summary.
+
+    Deliberately NOT the whole run row: run_log, the coverage ledger, and the
+    full citation rows are dropped (agents want the words; humans use
+    `alchemy export` for files and `alchemy status` for diagnostics).
+    Confidence dicts pass through untouched. version=None means the latest run.
+    """
+    if version is None:
+        version = alchemy_latest_version(ref)
+        if version is None:
+            raise http.CliError(f"no runs for goal {ref}")
+    run = alchemy_get_run(ref, version)
+    return {
+        "goal": ref,
+        "version": run.get("version", version),
+        "status": run.get("status"),
+        "is_final": bool(run.get("is_final", False)),
+        "stop_reason": run.get("stop_reason"),
+        "draft_markdown": run.get("draft_markdown") or "",
+        "sections": [
+            {"key": s.get("key", ""), "title": s.get("title", ""),
+             "filled": bool(s.get("filled", False)),
+             "confidence": s.get("confidence") or {}}
+            for s in (run.get("sections") or [])
+        ],
+        "citations": len(run.get("citations") or []),
+    }
+
+
 _ALCHEMY_TERMINAL = {"done", "failed", "cancelled"}
 
 

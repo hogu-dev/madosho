@@ -137,6 +137,42 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(p)
     p.set_defaults(func=commands.cmd_document_status)
 
+    # --- flat agent-facing goal tools (on the manifest; the nested `alchemy`
+    # group below stays the richer human surface) ---
+
+    p = sub.add_parser("list-goals", help="list alchemy goals")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_list_goals)
+
+    p = sub.add_parser("goal-runs", help="list an alchemy goal's runs (newest first)")
+    p.add_argument("goal", help="goal name or id")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_goal_runs)
+
+    p = sub.add_parser("export-goal-run",
+                       help="one run's draft + section summary as JSON (no files)")
+    p.add_argument("goal", help="goal name or id")
+    p.add_argument("--version", type=int, default=None,
+                   help="run version (default: latest)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_export_goal_run)
+
+    p = sub.add_parser("run-goal",
+                       help="start a new run of an alchemy goal (returns immediately)")
+    p.add_argument("goal", help="goal name or id")
+    p.add_argument("max_llm_calls", type=int,
+                   help="hard cap on LLM calls for this run")
+    p.add_argument("--guidance", default=None,
+                   help="steering note for this run")
+    p.add_argument("--coverage", default=None,
+                   choices=["search", "full", "exhaustive"])
+    p.add_argument("--provider", default=None,
+                   help="LLM provider (default: the server's default llm endpoint)")
+    p.add_argument("--model", default=None,
+                   help="LLM model name (default: the server's default llm endpoint)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_run_goal)
+
     p = sub.add_parser("list-runs",
                        help="list research or eval runs for a corpus")
     p.add_argument("corpus_id", type=int)

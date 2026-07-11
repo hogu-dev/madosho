@@ -314,6 +314,7 @@ def test_manifest_shape_and_invariants():
         "list-corpora", "list-documents", "list-pipelines",
         "create-corpus", "upload-document", "build-pipeline",
         "add-document-to-corpus", "document-status",
+        "list-goals", "goal-runs", "export-goal-run", "run-goal",
     ]
     for t in m["tools"]:
         assert set(t) >= {"name", "description", "parameters", "invocation"}
@@ -374,11 +375,43 @@ def test_manifest_list_pipelines_params():
     }
 
 
+def test_manifest_export_goal_run_params():
+    from madosho_cli.manifest import build_manifest
+
+    t = next(t for t in build_manifest()["tools"] if t["name"] == "export-goal-run")
+    assert t["scope"] == "read"
+    assert t["parameters"]["required"] == ["goal"]
+    assert set(t["parameters"]["properties"]) == {"goal", "version"}
+    assert t["invocation"] == {
+        "subcommand": "export-goal-run",
+        "positional": ["goal"],
+        "options": ["version"],
+    }
+
+
+def test_manifest_run_goal_params():
+    from madosho_cli.manifest import build_manifest
+
+    t = next(t for t in build_manifest()["tools"] if t["name"] == "run-goal")
+    assert t["scope"] == "write"
+    # max_llm_calls is REQUIRED at the tool surface (the API would default it):
+    # an agent must never be able to launch an uncapped run
+    assert t["parameters"]["required"] == ["goal", "max_llm_calls"]
+    assert set(t["parameters"]["properties"]) == {
+        "goal", "max_llm_calls", "guidance", "coverage", "provider", "model"
+    }
+    assert t["invocation"] == {
+        "subcommand": "run-goal",
+        "positional": ["goal", "max_llm_calls"],
+        "options": ["guidance", "coverage", "provider", "model"],
+    }
+
+
 def test_agent_tools_cli_json(capsys):
     rc = cli_main.main(["agent-tools", "--json"])
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
-    assert "tools" in out and len(out["tools"]) == 11
+    assert "tools" in out and len(out["tools"]) == 15
 
 
 def test_agent_tools_cli_human(capsys):

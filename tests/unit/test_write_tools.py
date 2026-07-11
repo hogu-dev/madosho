@@ -287,6 +287,7 @@ def test_manifest_scopes_and_tool_set():
         "search", "search-doc", "get-doc", "list-corpora", "list-documents",
         "list-pipelines", "create-corpus", "upload-document", "build-pipeline",
         "add-document-to-corpus", "document-status",
+        "list-goals", "goal-runs", "export-goal-run", "run-goal",
     ]
     assert tools["search"]["scope"] == "read"
     for w in ("create-corpus", "upload-document", "build-pipeline", "add-document-to-corpus"):

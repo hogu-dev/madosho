@@ -15,6 +15,7 @@ def test_mcp_tools_match_manifest_exactly():
         "list-corpora", "list-documents", "list-pipelines",
         "create-corpus", "upload-document", "build-pipeline",
         "add-document-to-corpus", "document-status",
+        "list-goals", "goal-runs", "export-goal-run", "run-goal",
     ]
     for t in tools:
         # inputSchema IS the manifest parameters (drift fails here)
@@ -25,5 +26,5 @@ def test_mcp_tools_match_manifest_exactly():
 def test_build_tools_returns_mcp_tool_objects():
     import mcp.types as types
     tools = build_tools()
-    assert len(tools) == 11
+    assert len(tools) == 15
     assert all(isinstance(t, types.Tool) for t in tools)

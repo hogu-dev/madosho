@@ -24,6 +24,7 @@ def test_protocol_list_and_call(monkeypatch):
                 "list-corpora", "list-documents", "list-pipelines",
                 "create-corpus", "upload-document", "build-pipeline",
                 "add-document-to-corpus", "document-status",
+                "list-goals", "goal-runs", "export-goal-run", "run-goal",
             ]
             result = await client.call_tool("list-corpora", {})
             assert result.isError is False

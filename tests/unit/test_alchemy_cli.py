@@ -689,3 +689,110 @@ def test_alchemy_create_default_omits_include_generated(fake_http):
                    "--goal", "map vulns", "--json"])
     _, _, body = fh.calls[-1]
     assert "include_generated" not in body        # server default False
+
+
+# ---------------------------------------------------------------------------
+# flat agent-facing goal tools (on the agent-tools manifest, unlike the nested
+# `alchemy` group above): list-goals, goal-runs, export-goal-run, run-goal
+# ---------------------------------------------------------------------------
+
+def test_flat_list_goals(fake_http, capsys):
+    fake_http({"/alchemy/goals": [_goal(), _goal(id=2, name="other", corpus_id=4)]})
+    rc = cli_main.main(["list-goals", "--json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [g["name"] for g in out] == ["find_vuln", "other"]
+
+
+def test_flat_goal_runs(fake_http, capsys):
+    fake_http({
+        "/alchemy/goals/find_vuln/runs": [_run(version=2, status="running"),
+                                          _run(version=1, status="done", is_final=True)],
+    })
+    rc = cli_main.main(["goal-runs", "find_vuln", "--json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [r["version"] for r in out] == [2, 1]
+
+
+def test_flat_export_goal_run_defaults_to_latest(fake_http, capsys):
+    run = _report_run(version=2)
+    fake_http({
+        "/alchemy/goals/vuln_report/runs/2": run,
+        "/alchemy/goals/vuln_report/runs": [run],
+    })
+    rc = cli_main.main(["export-goal-run", "vuln_report", "--json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["goal"] == "vuln_report" and out["version"] == 2
+    assert out["status"] == "done" and out["is_final"] is False
+    assert out["draft_markdown"].startswith("# Vuln report")
+    # slim agent-facing reshape: confidence passes through; section content,
+    # run_log, ledger, and the full citation rows are NOT carried
+    assert out["sections"] == [
+        {"key": "summary", "title": "Summary", "filled": True,
+         "confidence": {"level": "high", "distinct_docs": 2, "citations": 3}},
+        {"key": "detail", "title": "Detail", "filled": False,
+         "confidence": {"level": "low", "distinct_docs": 0, "citations": 0}},
+    ]
+    assert out["citations"] == 1              # a count, not the citation rows
+    for absent in ("run_log", "ledger", "progress"):
+        assert absent not in out
+
+
+def test_flat_export_goal_run_explicit_version(fake_http, capsys):
+    run = _report_run(version=1)
+    fh = fake_http({"/alchemy/goals/vuln_report/runs/1": run})
+    rc = cli_main.main(["export-goal-run", "vuln_report", "--version", "1", "--json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["version"] == 1
+    # an explicit version must skip the latest-version listing entirely
+    assert all(url.endswith("/runs/1") for _m, url, _b in fh.calls)
+
+
+def test_flat_export_goal_run_no_runs_errors(fake_http, capsys):
+    fake_http({"/alchemy/goals/vuln_report/runs": []})
+    rc = cli_main.main(["export-goal-run", "vuln_report", "--json"])
+    assert rc == 1
+    assert "no runs" in capsys.readouterr().err
+
+
+def test_flat_run_goal_caps_and_returns_immediately(fake_http, capsys):
+    fh = fake_http({
+        "/alchemy/goals/find_vuln/runs": _run(version=3, status="pending"),
+    })
+    rc = cli_main.main(["run-goal", "find_vuln", "6", "--json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["version"] == 3 and out["status"] == "pending"
+    method, url, body = fh.calls[-1]
+    assert method == "POST" and url.endswith("/alchemy/goals/find_vuln/runs")
+    assert body["max_llm_calls"] == 6
+    # provider/model omitted -> the POST body carries NO llm key at all (the
+    # pinned wire shape; nulls would 400 as a partial pair) - the server-side
+    # default-llm-endpoint fallback (Task 6) owns the substitution
+    assert "llm" not in body
+    # fire-and-forget: exactly one HTTP call, no status polling
+    assert len(fh.calls) == 1
+
+
+def test_flat_run_goal_passes_options(fake_http):
+    fh = fake_http({
+        "/alchemy/goals/find_vuln/runs": _run(version=4, status="pending"),
+    })
+    cli_main.main(["run-goal", "find_vuln", "10", "--guidance", "dig deeper",
+                   "--coverage", "exhaustive", "--provider", "openai",
+                   "--model", "m", "--json"])
+    _, _, body = fh.calls[-1]
+    assert body["llm"] == {"provider": "openai", "model": "m"}
+    assert body["guidance"] == "dig deeper"
+    assert body["coverage"] == "exhaustive"
+    assert body["max_llm_calls"] == 10
+
+
+def test_flat_run_goal_cap_is_required(fake_http, capsys):
+    fake_http({})
+    with pytest.raises(SystemExit):
+        cli_main.main(["run-goal", "find_vuln", "--json"])
+    assert "max_llm_calls" in capsys.readouterr().err

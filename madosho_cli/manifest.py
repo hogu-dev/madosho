@@ -356,6 +356,107 @@ _TOOLS: list[dict[str, Any]] = [
             "options": [],
         },
     },
+    {
+        "name": "list-goals",
+        "scope": "read",
+        "description": (
+            "List the alchemy goals: named, versioned autonomous research/report "
+            "objectives over a corpus. Use this to discover the goal names to "
+            "pass to goal-runs / export-goal-run / run-goal."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+        "invocation": {"subcommand": "list-goals", "positional": [], "options": []},
+    },
+    {
+        "name": "goal-runs",
+        "scope": "read",
+        "description": (
+            "List an alchemy goal's runs, newest first (version, status, "
+            "coverage, is_final, stop_reason, usage). Poll this after 'run-goal'; "
+            "a run is finished when its status is done, failed, or cancelled."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "goal name or id"},
+            },
+            "required": ["goal"],
+        },
+        "invocation": {
+            "subcommand": "goal-runs",
+            "positional": ["goal"],
+            "options": [],
+        },
+    },
+    {
+        "name": "export-goal-run",
+        "scope": "read",
+        "description": (
+            "Return one alchemy run's draft: the full draft_markdown plus a slim "
+            "section summary (key, title, filled, confidence) and the citation "
+            "count. Defaults to the goal's latest run. Returns JSON; never "
+            "writes files."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "goal name or id"},
+                "version": {
+                    "type": "integer",
+                    "description": "run version to export (default: the latest run)",
+                },
+            },
+            "required": ["goal"],
+        },
+        "invocation": {
+            "subcommand": "export-goal-run",
+            "positional": ["goal"],
+            "options": ["version"],
+        },
+    },
+    {
+        "name": "run-goal",
+        "scope": "write",
+        "description": (
+            "Start a new run of an alchemy goal. Returns the created run "
+            "(version, status) immediately -- it does NOT wait; poll 'goal-runs' "
+            "until the run finishes, then fetch the draft with 'export-goal-run'. "
+            "max_llm_calls hard-caps the run's LLM usage and is required: never "
+            "launch an uncapped run."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "goal name or id"},
+                "max_llm_calls": {
+                    "type": "integer",
+                    "description": "hard cap on LLM calls for this run (required)",
+                },
+                "guidance": {
+                    "type": "string",
+                    "description": "optional steering note for this run",
+                },
+                "coverage": {
+                    "type": "string",
+                    "description": "coverage mode override: search, full, or exhaustive",
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "LLM provider (default: the server's default llm endpoint)",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "LLM model name (default: the server's default llm endpoint)",
+                },
+            },
+            "required": ["goal", "max_llm_calls"],
+        },
+        "invocation": {
+            "subcommand": "run-goal",
+            "positional": ["goal", "max_llm_calls"],
+            "options": ["guidance", "coverage", "provider", "model"],
+        },
+    },
 ]
 
 

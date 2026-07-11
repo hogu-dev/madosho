@@ -271,6 +271,51 @@ def cmd_list_runs(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# flat agent-facing goal tools (ON the manifest, unlike the nested `alchemy`
+# group below, which stays the richer human surface)
+# ---------------------------------------------------------------------------
+
+def cmd_list_goals(args: argparse.Namespace) -> int:
+    data = core.alchemy_list_goals()
+    _emit_or_print(args, data,
+                   lambda rows: "\n".join(f"{g['id']}\t{g['name']}\t"
+                                          f"corpus {g['corpus_id']}" for g in rows)
+                                or "no goals")
+    return 0
+
+
+def cmd_goal_runs(args: argparse.Namespace) -> int:
+    data = core.alchemy_list_runs(args.goal)
+    _emit_or_print(args, data,
+                   lambda rows: "\n".join(f"v{r['version']}\t{r['status']}\t"
+                                          f"{'FINAL' if r.get('is_final') else ''}"
+                                          for r in rows) or "no runs")
+    return 0
+
+
+def cmd_export_goal_run(args: argparse.Namespace) -> int:
+    data = core.alchemy_export_run(args.goal, version=args.version)
+    _emit_or_print(args, data,
+                   lambda d: f"{d['goal']} v{d['version']}: {d['status']} "
+                             f"({len(d['draft_markdown'])} chars, "
+                             f"{d['citations']} citations)")
+    return 0
+
+
+def cmd_run_goal(args: argparse.Namespace) -> int:
+    # No waiting here (unlike cmd_alchemy_run): agents poll goal-runs instead.
+    # provider/model may be None; they pass through so the server-side default
+    # llm-endpoint fallback owns the substitution.
+    data = core.alchemy_run(args.goal, args.provider, args.model,
+                            coverage=args.coverage, guidance=args.guidance,
+                            max_llm_calls=args.max_llm_calls)
+    _emit_or_print(args, data,
+                   lambda d: f"started {args.goal} v{d['version']} "
+                             f"({d['status']}); poll goal-runs")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # alchemy subcommands (autonomous goals / living research; CLI-only, not on
 # the manifest - see manifest.py's docstring for why)
 # ---------------------------------------------------------------------------
