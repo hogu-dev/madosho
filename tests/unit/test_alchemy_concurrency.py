@@ -101,3 +101,61 @@ def test_snapshot_is_a_consistent_copy():
     llm.complete([], [])
     assert snap.llm_calls == 1       # the copy did not move with the live counter
     assert llm.usage.llm_calls == 2
+
+
+# --- C2: CoverageLedger is threadsafe -----------------------------------
+
+from alchemy.ledger import CoverageLedger
+
+
+def test_ledger_to_dict_never_tears_under_concurrent_marks():
+    # to_dict() sorts consulted.items() - an insert landing mid-sort raises
+    # "RuntimeError: dictionary changed size during iteration". Hammer it:
+    # one thread marks 30k docs while another snapshots continuously.
+    ledger = CoverageLedger(mode="search",
+                            corpus_docs={i: f"d{i}" for i in range(50)})
+    done = threading.Event()
+    errors = []
+
+    def writer():
+        for i in range(30_000):
+            ledger.mark(i, "search")
+        done.set()
+
+    def reader():
+        while not done.is_set():
+            try:
+                ledger.to_dict()
+            except RuntimeError as e:   # pragma: no cover - the bug branch
+                errors.append(e)
+                done.set()
+                return
+
+    r = threading.Thread(target=reader)
+    w = threading.Thread(target=writer)
+    r.start()
+    w.start()
+    w.join()
+    r.join()
+    assert errors == []
+    assert len(ledger.consulted) == 30_000
+
+
+def test_concurrent_marks_keep_strongest_and_lose_none():
+    ledger = CoverageLedger(mode="full",
+                            corpus_docs={i: f"d{i}" for i in range(100)})
+
+    def mark_all(how):
+        for i in range(100):
+            ledger.mark(i, how)
+
+    threads = [threading.Thread(target=mark_all, args=(how,))
+               for how in ("search", "forced", "read", "search")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    # strongest evidence wins per doc; no mark is lost
+    assert all(ledger.consulted[i] == "read" for i in range(100))
+    assert ledger.unconsulted() == []
+    assert ledger.complete() is True
