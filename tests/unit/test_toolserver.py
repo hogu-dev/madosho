@@ -150,3 +150,57 @@ def test_cors_headers_present_for_browser_frontend():
     )
     assert pre.status_code == 200
     assert pre.headers.get("access-control-allow-origin") == "*"
+
+
+def test_list_goals_endpoint(fake_http):
+    fake_http({"/alchemy/goals": [
+        {"id": 1, "name": "find_vuln", "corpus_id": 3, "goal_type": "living-research"}]})
+    r = TestClient(app).post("/list-goals", json={})
+    assert r.status_code == 200
+    assert r.json()[0]["name"] == "find_vuln"
+
+
+def test_goal_runs_endpoint(fake_http):
+    fake_http({"/alchemy/goals/find_vuln/runs": [
+        {"id": 9, "version": 2, "status": "running", "is_final": False},
+        {"id": 8, "version": 1, "status": "done", "is_final": True}]})
+    r = TestClient(app).post("/goal-runs", json={"goal": "find_vuln"})
+    assert r.status_code == 200
+    assert [x["version"] for x in r.json()] == [2, 1]
+
+
+def test_export_goal_run_endpoint_defaults_to_latest(fake_http):
+    run = {"id": 9, "version": 2, "status": "done", "is_final": False,
+           "stop_reason": "complete", "draft_markdown": "# Draft\nbody",
+           "sections": [{"key": "s", "title": "S", "content": "long text",
+                         "filled": True, "note": "",
+                         "confidence": {"level": "high"}}],
+           "citations": [{"n": 1, "document_id": 7}],
+           "run_log": ["step"], "ledger": {"summary": "x"}}
+    fake_http({
+        "/alchemy/goals/find_vuln/runs/2": run,
+        "/alchemy/goals/find_vuln/runs": [run],
+    })
+    r = TestClient(app).post("/export-goal-run", json={"goal": "find_vuln"})
+    assert r.status_code == 200
+    out = r.json()
+    assert out["version"] == 2
+    assert out["draft_markdown"].startswith("# Draft")
+    assert out["citations"] == 1                 # slim: a count, not the rows
+    assert "run_log" not in out and "ledger" not in out
+
+
+def test_run_goal_endpoint_marshals_body(fake_http):
+    fh = fake_http({"/alchemy/goals/find_vuln/runs":
+                    {"id": 9, "version": 3, "status": "pending"}})
+    r = TestClient(app).post("/run-goal", json={
+        "goal": "find_vuln", "max_llm_calls": 6, "coverage": "full"})
+    assert r.status_code == 200
+    assert r.json()["version"] == 3
+    method, url, body = fh.calls[-1]
+    assert method == "POST" and url.endswith("/alchemy/goals/find_vuln/runs")
+    assert body["max_llm_calls"] == 6 and body["coverage"] == "full"
+    # provider/model omitted -> NO llm key in the upstream POST body (the
+    # pinned wire shape); the server-side default llm-endpoint fallback
+    # (Task 6) owns the substitution
+    assert "llm" not in body

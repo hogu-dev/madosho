@@ -193,6 +193,34 @@ class DocumentStatusBody(BaseModel):
     document_id: int = Field(..., description="document id to check")
 
 
+class ListGoalsBody(BaseModel):
+    pass
+
+
+class GoalRunsBody(BaseModel):
+    goal: str = Field(..., description="goal name or id")
+
+
+class ExportGoalRunBody(BaseModel):
+    goal: str = Field(..., description="goal name or id")
+    version: int | None = Field(
+        None, description="run version to export (default: the latest run)")
+
+
+class RunGoalBody(BaseModel):
+    goal: str = Field(..., description="goal name or id")
+    max_llm_calls: int = Field(
+        ..., description="hard cap on LLM calls for this run (required)")
+    guidance: str | None = Field(
+        None, description="optional steering note for this run")
+    coverage: str | None = Field(
+        None, description="coverage mode override: search, full, or exhaustive")
+    provider: str | None = Field(
+        None, description="LLM provider (default: the server's default llm endpoint)")
+    model: str | None = Field(
+        None, description="LLM model name (default: the server's default llm endpoint)")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -280,6 +308,36 @@ def add_document_to_corpus(body: AddDocumentToCorpusBody):
              summary="Return the current status and pipeline list for a document.")
 def document_status(body: DocumentStatusBody):
     return _guard(core.document_status, body.document_id)
+
+
+@_tools.post("/list-goals", operation_id="list-goals",
+             summary="List the alchemy goals (autonomous research/report objectives).")
+def list_goals(body: ListGoalsBody):
+    return _guard(core.alchemy_list_goals)
+
+
+@_tools.post("/goal-runs", operation_id="goal-runs",
+             summary="List an alchemy goal's runs, newest first.")
+def goal_runs(body: GoalRunsBody):
+    return _guard(core.alchemy_list_runs, body.goal)
+
+
+@_tools.post("/export-goal-run", operation_id="export-goal-run",
+             summary="Return one alchemy run's draft markdown + slim section summary.")
+def export_goal_run(body: ExportGoalRunBody):
+    return _guard(lambda: core.alchemy_export_run(body.goal, version=body.version))
+
+
+@_tools.post("/run-goal", operation_id="run-goal",
+             summary="Start a new run of an alchemy goal (returns immediately; "
+                     "poll goal-runs).")
+def run_goal(body: RunGoalBody):
+    return _guard(lambda: core.alchemy_run(
+        body.goal, body.provider, body.model,
+        coverage=body.coverage,
+        guidance=body.guidance,
+        max_llm_calls=body.max_llm_calls,
+    ))
 
 
 app.include_router(_tools)
