@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "madosho-cli"
+version = "0.1.0"
+description = "Thin, zero-dependency HTTP client for a madosho RAG server."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/hogu-dev/madosho"
+Repository = "https://github.com/hogu-dev/madosho"
+
+[project.scripts]
+madosho-cli = "madosho_cli.main:main"
+
+# Source lives in-place at the repo root (../../madosho_cli); reference it rather
+# than moving it. force-include with a parent path builds a correct WHEEL but not
+# an sdist (the parent path escapes the sdist root), so this dist is wheel-only —
+# fine for a pure-Python py3-none-any wheel. Build with `uv build --wheel`.
+[tool.hatch.build.targets.wheel.force-include]
+"../../madosho_cli" = "madosho_cli"
