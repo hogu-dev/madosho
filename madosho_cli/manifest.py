@@ -442,11 +442,11 @@ _TOOLS: list[dict[str, Any]] = [
                 },
                 "provider": {
                     "type": "string",
-                    "description": "LLM provider (default: the server's default llm endpoint)",
+                    "description": "LLM provider -- give together with 'model', or omit BOTH to use the server's default llm endpoint (a lone one is rejected)",
                 },
                 "model": {
                     "type": "string",
-                    "description": "LLM model name (default: the server's default llm endpoint)",
+                    "description": "LLM model name -- give together with 'provider', or omit BOTH to use the server's default llm endpoint (a lone one is rejected)",
                 },
             },
             "required": ["goal", "max_llm_calls"],

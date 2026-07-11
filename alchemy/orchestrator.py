@@ -660,6 +660,12 @@ def _run_sections_parallel(compiled, results, *, corpus, tools, counting,
     except Exception:
         pass
 
+    # register each unit's _UnitLlm BEFORE it runs (keyed by section) so the
+    # assembly loop can still read the partial call count when a unit raises and
+    # its return value never arrives - per-section llm_calls stays exact on the
+    # cap/crash branches too, so the section counts still sum to the run total.
+    unit_llms: dict[str, _UnitLlm] = {}
+
     def _unit(section, prior):
         prompt = compose_section_prompt(
             compiled.goal, section, corpus=corpus, guidance=guidance,
@@ -673,6 +679,7 @@ def _run_sections_parallel(compiled, results, *, corpus, tools, counting,
                 section=_section, guidance=guidance)
 
         unit_llm = _UnitLlm(counting)
+        unit_llms[section.key] = unit_llm
         unit, unit_handoffs = _run_unit_with_handoffs(
             prompt, tools=tools, llm=unit_llm, budget=unit_budget,
             autonomous_md=report_md, should_cancel=should_cancel,
@@ -696,10 +703,15 @@ def _run_sections_parallel(compiled, results, *, corpus, tools, counting,
             try:
                 unit, unit_handoffs, unit_calls = fut.result()
             except CallCapExceeded:
-                # this unit tripped the (atomic) backstop mid-flight; its
-                # partial context dies, its section carries prior if any.
-                # llm_calls stays 0 - the unit wrapper died with the thread.
+                # this unit tripped the (atomic) backstop mid-flight; its partial
+                # context dies, its section carries prior if any. The calls it DID
+                # spend before capping are still attributed (via the registered
+                # _UnitLlm) so per-section counts reconcile with the run total,
+                # matching the sequential path's before/after delta.
                 res.note = "llm call cap"
+                um = unit_llms.get(section.key)
+                if um is not None:
+                    res.llm_calls = um.unit_calls
                 if halted is None:
                     halted = "call_cap"
                 _carry_prior(res, prior, _SHORTFALL["call_cap"])
@@ -707,9 +719,13 @@ def _run_sections_parallel(compiled, results, *, corpus, tools, counting,
             except Exception as e:
                 # one unit crashing marks ONLY its own section (other units
                 # already ran or are running - keeping their results is the
-                # partial-survival guarantee); the run still reports "failed"
+                # partial-survival guarantee); the run still reports "failed".
+                # Its partial spend is attributed from the registered _UnitLlm.
                 msg = f"{type(e).__name__}: {e}"[:200]
                 res.note = f"unit failed: {msg}"
+                um = unit_llms.get(section.key)
+                if um is not None:
+                    res.llm_calls = um.unit_calls
                 if halted is None:
                     halted = "failed"
                 _carry_prior(res, prior, _SHORTFALL["failed"])

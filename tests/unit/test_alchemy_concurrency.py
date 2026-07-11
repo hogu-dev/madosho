@@ -300,6 +300,37 @@ def test_parallel_quota_is_presplit_not_greedy():
     assert result.stop_reason == "final"   # filled via forced synthesis, no bubble
 
 
+def test_parallel_capped_section_attributes_its_partial_spend():
+    """A section that trips the atomic cap mid-flight must still report the
+    calls it DID spend, so per-section counts reconcile with the run total -
+    the invariant the sequential path upholds via its before/after delta.
+    Regression guard: the parallel cap/crash branches used to leave llm_calls
+    at 0, so a capped section under-reported and the section sum no longer
+    matched usage.llm_calls.
+
+    cap=3, 2 sections: each unit needs 1 search + forced synthesis = 2 calls
+    (4 wanted), so the 4th call trips the atomic cap - exactly one section caps
+    after spending 1 call, the other fills with 2. Interleaving picks which,
+    but the sum is 3 either way."""
+    class Searcher:
+        def complete(self, messages, tools):
+            if tools:
+                return AssistantTurn(text=None, tool_calls=[
+                    ToolCall(id="s", name="search",
+                             arguments={"corpus": "c", "query": "q"})])
+            return AssistantTurn(text="body\n\nCONFIDENCE: low")
+
+    result = alchemy.run_goal(
+        "report", REPORT_SPEC, corpus="c", tools=ConcurrencyTools(),
+        llm=Searcher(), budget=RunBudget(), concurrency=2,
+        max_llm_calls=3, max_handoffs=0)
+    assert result.usage.llm_calls == 3
+    assert any(s.note == "llm call cap" for s in result.sections)
+    # the fix: the capped section's partial spend is attributed, so the
+    # per-section counts still sum to the run total
+    assert sum(s.llm_calls for s in result.sections) == result.usage.llm_calls
+
+
 # --- C4: proof battery ----------------------------------------------------
 
 

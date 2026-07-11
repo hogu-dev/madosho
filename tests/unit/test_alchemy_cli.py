@@ -791,6 +791,18 @@ def test_flat_run_goal_passes_options(fake_http):
     assert body["max_llm_calls"] == 10
 
 
+def test_flat_run_goal_provider_without_model_errors(fake_http, capsys):
+    # the flat run-goal tool gets the same both-or-neither guard as
+    # `alchemy run`: a lone --provider (or --model) is a typo, caught locally
+    # instead of eating a 400 round-trip - so NO HTTP call is made
+    fh = fake_http({})
+    rc = cli_main.main(["run-goal", "find_vuln", "6", "--provider", "openai"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--provider" in err and "--model" in err
+    assert len(fh.calls) == 0
+
+
 def test_flat_run_goal_cap_is_required(fake_http, capsys):
     fake_http({})
     with pytest.raises(SystemExit):

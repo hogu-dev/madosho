@@ -2159,8 +2159,8 @@ def start_alchemy_run(ref: str, body: AlchemyRunLaunch, session: SessionDep,
     if g is None:
         raise HTTPException(status_code=404, detail="goal not found")
     llm_cfg = dict(body.llm or {})
-    if not llm_cfg.get("provider") and not llm_cfg.get("model"):
-        # No llm at all -> fall back to the default registry row (the same
+    if "provider" not in llm_cfg and "model" not in llm_cfg:
+        # No llm block at all -> fall back to the default registry row (the same
         # is_default row resolve_llm picks for the query plane) and stamp the
         # resolved pair into the run config, so the run record is explicit
         # about what it used. Fallback is all-or-nothing: see the elif.
@@ -2173,9 +2173,10 @@ def start_alchemy_run(ref: str, body: AlchemyRunLaunch, session: SessionDep,
                        "(no default LLM endpoint configured)")
         llm_cfg = {"provider": default.provider, "model": default.model}
     elif not llm_cfg.get("provider") or not llm_cfg.get("model"):
-        # a PARTIAL pair is a user mistake, not a request for the default -
-        # silently pairing their provider with the default's model (or vice
-        # versa) would hide the typo
+        # a PARTIAL or BLANKED pair (one key missing, or a present-but-empty
+        # provider/model) is a client mistake, not a request for the default -
+        # silently substituting the default here would hide the caller's bug.
+        # Only a fully-absent llm block (both keys missing) means "use default".
         raise HTTPException(status_code=400,
                             detail="llm provider and model are required")
     last = session.scalars(select(db.AlchemyRun)

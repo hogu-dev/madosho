@@ -304,8 +304,14 @@ def cmd_export_goal_run(args: argparse.Namespace) -> int:
 
 def cmd_run_goal(args: argparse.Namespace) -> int:
     # No waiting here (unlike cmd_alchemy_run): agents poll goal-runs instead.
-    # provider/model may be None; they pass through so the server-side default
-    # llm-endpoint fallback owns the substitution.
+    # Both provider and model may be None; they pass through so the server-side
+    # default llm-endpoint fallback owns the substitution. But a LONE one is a
+    # typo, not a request for the default - fail fast locally (same guard and
+    # message as cmd_alchemy_run) instead of eating a 400 network round-trip.
+    if (args.provider is None) != (args.model is None):
+        raise http.CliError(
+            "--provider and --model must be given together "
+            "(omit both to use the server's default LLM endpoint)")
     data = core.alchemy_run(args.goal, args.provider, args.model,
                             coverage=args.coverage, guidance=args.guidance,
                             max_llm_calls=args.max_llm_calls)

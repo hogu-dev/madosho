@@ -54,8 +54,14 @@ function downloadDraft(run: AlchemyRun, goalName: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download = `${goalName || "alchemy"}-v${run.version}.md`;
+  // some browsers (older Safari) ignore a download-click on a detached anchor,
+  // and revoking the object URL in the same tick can cancel an in-flight save -
+  // append to the DOM, click, then revoke on the next tick.
+  a.style.display = "none";
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 // Pure viewer: draft, sections, coverage ledger, citations. All actions
@@ -131,7 +137,7 @@ export function AlchemyRunView() {
           <div style={{ ...mono(10), letterSpacing: "0.12em", textTransform: "uppercase",
             marginBottom: 7 }}>Coverage ledger</div>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", ...mono(12, "var(--ink)") }}>
-            <span>consulted {consultedCount} / {ledger.total_docs} docs</span>
+            <span>consulted {consultedCount} / {ledger.total_docs ?? "?"} docs</span>
             {(ledger.from_prior?.length ?? 0) > 0 && <span>{ledger.from_prior.length} from prior</span>}
             {ledger.complete != null && (
               <span style={{ color: ledger.complete ? "#4a7a3c" : "var(--oxblood)" }}>

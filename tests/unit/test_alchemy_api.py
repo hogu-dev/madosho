@@ -555,6 +555,23 @@ def test_run_launch_partial_llm_400_even_with_default(tmp_path):
         assert r.status_code == 400, f"llm={partial}: {r.text}"
 
 
+def test_run_launch_blank_llm_pair_400_even_with_default(tmp_path):
+    """A present-but-BLANK pair ({'provider': '', 'model': ''}) is a client
+    bug (e.g. a blanked-out form), not a request for the default: it must 400,
+    not silently launch against the default endpoint. Only a fully-absent llm
+    block ({} / omitted) means 'use the default'."""
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    _seed_default_endpoint()
+    for blank in ({"provider": "", "model": ""},
+                  {"provider": "openai", "model": ""},
+                  {"provider": "", "model": "m"}):
+        r = client.post("/alchemy/goals/find_vuln/runs",
+                        json={"llm": blank})
+        assert r.status_code == 400, f"llm={blank}: {r.text}"
+
+
 def test_run_launch_explicit_llm_ignores_default(tmp_path):
     client, _ = _client(tmp_path)
     cid = _corpus(client)

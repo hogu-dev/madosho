@@ -372,7 +372,8 @@ export interface AlchemySection {
 // Coverage ledger: which corpus docs the run consulted and how.
 export interface AlchemyLedger {
   mode: string;
-  total_docs: number;
+  total_docs: number | null;   // null when the corpus doc list could not be resolved
+
   consulted: Record<string, "search" | "forced" | "read">;
   from_prior: number[];
   unconsulted: number[];

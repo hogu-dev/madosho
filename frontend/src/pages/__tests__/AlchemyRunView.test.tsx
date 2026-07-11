@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { AlchemyRunView } from "../AlchemyRunView";
 import { api } from "../../api/client";
@@ -97,6 +97,30 @@ test("search-mode ledger with complete: null shows no red incomplete indicator",
   expect(await screen.findByText(/consulted 4 \/ 5 docs/)).toBeInTheDocument();
   expect(screen.queryByText("incomplete")).not.toBeInTheDocument();
   expect(screen.queryByText("complete")).not.toBeInTheDocument();
+});
+
+test("ledger with an unknown corpus size renders '?' not a blank or 'null'", async () => {
+  vi.spyOn(api, "getAlchemyRun").mockResolvedValue({ ...DONE_RUN,
+    ledger: { ...DONE_RUN.ledger, total_docs: null } } as any);
+  renderPage();
+  expect(await screen.findByText(/consulted 4 \/ \? docs/)).toBeInTheDocument();
+});
+
+test("download button creates a blob url, removes its anchor, and revokes on the next tick", async () => {
+  const createURL = vi.fn(() => "blob:xyz");
+  const revokeURL = vi.fn();
+  vi.stubGlobal("URL", { createObjectURL: createURL, revokeObjectURL: revokeURL });
+  renderPage();
+  const btn = await screen.findByRole("button", { name: /Download/ });
+  vi.useFakeTimers();
+  fireEvent.click(btn);
+  expect(createURL).toHaveBeenCalledTimes(1);
+  expect(document.querySelector("a[download]")).toBeNull();   // appended for the click, then removed
+  expect(revokeURL).not.toHaveBeenCalled();                   // deferred, not synchronous
+  vi.runAllTimers();
+  expect(revokeURL).toHaveBeenCalledWith("blob:xyz");
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 test("a running run shows the working phase and no download", async () => {
