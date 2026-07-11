@@ -177,8 +177,9 @@ def test_run_requires_llm_400(tmp_path):
     client, _ = _client(tmp_path)
     cid = _corpus(client)
     _create_goal(client, cid)
-    # llm present but empty -> the route's own 400 (a missing llm key entirely
-    # is Pydantic's 422, which needs no test of ours)
+    # llm present but empty and NO default endpoint row seeded -> the route's
+    # own 400 (with a default row this would fall back instead; see the
+    # stage-E fallback tests below)
     r = client.post("/alchemy/goals/find_vuln/runs", json={"llm": {}})
     assert r.status_code == 400
 
@@ -490,6 +491,81 @@ def test_run_launch_concurrency_out_of_bounds_422(tmp_path):
                         json={"llm": {"provider": "openai", "model": "m"},
                               "concurrency": bad})
         assert r.status_code == 422, f"concurrency={bad}: {r.text}"
+
+
+def _seed_default_endpoint(provider="openai", model="gpt-default"):
+    """A default LLM-endpoint registry row for the launch-fallback tests
+    (stage E): the same is_default row resolve_llm picks for the query plane."""
+    with db.SessionLocal() as s:
+        s.add(db.LlmEndpoint(name="default-ep", provider=provider, model=model,
+                             api_base="http://llm", is_default=True))
+        s.commit()
+
+
+def test_run_launch_falls_back_to_default_endpoint(tmp_path):
+    """No llm block at all -> the server resolves the default registry row and
+    stamps the resolved provider/model into run.config, so the run record is
+    explicit about what it actually used (no implicit-at-execute-time magic)."""
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    _seed_default_endpoint()
+    r = client.post("/alchemy/goals/find_vuln/runs", json={})
+    assert r.status_code == 201, r.text
+    with db.SessionLocal() as s:
+        run = s.get(db.AlchemyRun, r.json()["id"])
+        assert run.config["llm"] == {"provider": "openai",
+                                     "model": "gpt-default"}
+
+
+def test_run_launch_empty_llm_dict_falls_back_too(tmp_path):
+    """{'llm': {}} (what a tool passing provider=None/model=None serializes
+    to) behaves the same as omitting llm entirely."""
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    _seed_default_endpoint()
+    r = client.post("/alchemy/goals/find_vuln/runs", json={"llm": {}})
+    assert r.status_code == 201, r.text
+    with db.SessionLocal() as s:
+        run = s.get(db.AlchemyRun, r.json()["id"])
+        assert run.config["llm"]["model"] == "gpt-default"
+
+
+def test_run_launch_no_llm_and_no_default_400(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    r = client.post("/alchemy/goals/find_vuln/runs", json={})
+    assert r.status_code == 400
+    assert "no default LLM endpoint" in r.json()["detail"]
+
+
+def test_run_launch_partial_llm_400_even_with_default(tmp_path):
+    """provider-without-model (or vice versa) is a user mistake, not a request
+    for the default: silently swapping in a different provider/model pair
+    would hide the typo, so it stays the plain 400."""
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    _seed_default_endpoint()
+    for partial in ({"provider": "openai"}, {"model": "m"}):
+        r = client.post("/alchemy/goals/find_vuln/runs",
+                        json={"llm": partial})
+        assert r.status_code == 400, f"llm={partial}: {r.text}"
+
+
+def test_run_launch_explicit_llm_ignores_default(tmp_path):
+    client, _ = _client(tmp_path)
+    cid = _corpus(client)
+    _create_goal(client, cid)
+    _seed_default_endpoint(provider="other", model="fallback-m")
+    r = client.post("/alchemy/goals/find_vuln/runs",
+                    json={"llm": {"provider": "openai", "model": "m"}})
+    assert r.status_code == 201, r.text
+    with db.SessionLocal() as s:
+        run = s.get(db.AlchemyRun, r.json()["id"])
+        assert run.config["llm"] == {"provider": "openai", "model": "m"}
 
 
 def _seed_artifacts(rid):

@@ -657,7 +657,7 @@ class AlchemyRunLaunch(BaseModel):
     guidance: str | None = None
     based_on_version: int | None = None
     fresh_coverage: bool = False                # rerun re-consults from scratch instead of inheriting the chain's ledger union
-    llm: dict                                   # {provider, model}
+    llm: dict = Field(default_factory=dict)     # {provider, model}; empty -> the server's default LLM endpoint
     budget_chars: int = 100_000
     max_rounds: int = 8
     max_llm_calls: int | None = Field(default=None, ge=1)  # optional self-cap for rate-limited upstreams
@@ -2158,8 +2158,26 @@ def start_alchemy_run(ref: str, body: AlchemyRunLaunch, session: SessionDep,
     g = _resolve_goal(session, ref)
     if g is None:
         raise HTTPException(status_code=404, detail="goal not found")
-    if not body.llm.get("provider") or not body.llm.get("model"):
-        raise HTTPException(status_code=400, detail="llm provider and model are required")
+    llm_cfg = dict(body.llm or {})
+    if not llm_cfg.get("provider") and not llm_cfg.get("model"):
+        # No llm at all -> fall back to the default registry row (the same
+        # is_default row resolve_llm picks for the query plane) and stamp the
+        # resolved pair into the run config, so the run record is explicit
+        # about what it used. Fallback is all-or-nothing: see the elif.
+        default = session.scalar(
+            select(db.LlmEndpoint).where(db.LlmEndpoint.is_default.is_(True)))
+        if default is None:
+            raise HTTPException(
+                status_code=400,
+                detail="llm provider and model are required "
+                       "(no default LLM endpoint configured)")
+        llm_cfg = {"provider": default.provider, "model": default.model}
+    elif not llm_cfg.get("provider") or not llm_cfg.get("model"):
+        # a PARTIAL pair is a user mistake, not a request for the default -
+        # silently pairing their provider with the default's model (or vice
+        # versa) would hide the typo
+        raise HTTPException(status_code=400,
+                            detail="llm provider and model are required")
     last = session.scalars(select(db.AlchemyRun)
                            .where(db.AlchemyRun.goal_id == g.id)
                            .order_by(db.AlchemyRun.version.desc())).first()
@@ -2189,7 +2207,7 @@ def start_alchemy_run(ref: str, body: AlchemyRunLaunch, session: SessionDep,
         coverage=body.coverage or g.coverage, guidance=body.guidance,
         based_on_version=prior_draft_version,
         progress={"phase": "pending"},
-        config={"llm": body.llm, "budget_chars": body.budget_chars,
+        config={"llm": llm_cfg, "budget_chars": body.budget_chars,
                 "max_rounds": body.max_rounds,
                 "max_llm_calls": body.max_llm_calls,
                 "fresh_coverage": body.fresh_coverage,
