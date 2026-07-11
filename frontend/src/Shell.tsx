@@ -4,7 +4,8 @@ import { ReadOnlyBanner } from "./auth/ReadOnlyBanner";
 
 const CRUMB: Record<string, string> = {
   documents: "Documents", corpora: "Corpora", scrying: "Scrying",
-  quality: "Quality", research: "Research", settings: "Settings", keys: "Keys", users: "Users",
+  quality: "Quality", research: "Research", alchemy: "Alchemy",
+  settings: "Settings", keys: "Keys", users: "Users",
 };
 
 export function Shell() {

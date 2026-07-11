@@ -90,6 +90,7 @@ export function Sidebar() {
       {item("/compare", "Compare")}
       {item("/quality", "Quality")}
       {item("/research", "Research")}
+      {item("/alchemy", "Alchemy")}
       <div style={{ flex: 1 }} />
       {item("/settings", "Settings")}
       {scope === "admin" && item("/users", "Users")}

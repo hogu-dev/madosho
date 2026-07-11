@@ -12,6 +12,9 @@ import { Quality } from "./pages/Quality";
 import { EvalRun } from "./pages/EvalRun";
 import { Research } from "./pages/Research";
 import { ResearchRun } from "./pages/ResearchRun";
+import { Alchemy } from "./pages/Alchemy";
+import { AlchemyGoalDetail } from "./pages/AlchemyGoalDetail";
+import { AlchemyRunView } from "./pages/AlchemyRunView";
 import { Settings } from "./pages/Settings";
 import { Keys } from "./pages/Keys";
 import { Users } from "./pages/Users";
@@ -30,6 +33,9 @@ export const routes = [
     { path: "quality/eval/:runId", element: <EvalRun /> },
     { path: "research", element: <Research /> },
     { path: "research/:runId", element: <ResearchRun /> },
+    { path: "alchemy", element: <Alchemy /> },
+    { path: "alchemy/:goalRef", element: <AlchemyGoalDetail /> },
+    { path: "alchemy/:goalRef/runs/:version", element: <AlchemyRunView /> },
     { path: "settings", element: <Settings /> },
     { path: "keys", element: <Keys /> },
     { path: "users", element: <Users /> },
