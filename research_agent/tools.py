@@ -97,3 +97,114 @@ class CliToolProvider:
             return ToolResult(ok=True, data=json.loads(proc.stdout))
         except json.JSONDecodeError as e:
             return ToolResult(ok=False, error=f"bad JSON from tool {name!r}: {e}")
+
+
+class MultiToolProvider:
+    """Compose several ToolProviders into one. manifest() concatenates them;
+    invoke() routes a tool name to the provider that owns it (first wins). The
+    name->owner map is cached from the first manifest() call so a shelling
+    provider is not re-invoked on every dispatch."""
+
+    def __init__(self, providers: list):
+        self._providers = list(providers)
+        self._owner: dict | None = None
+
+    def manifest(self) -> list[ToolSpec]:
+        specs: list[ToolSpec] = []
+        owner: dict = {}
+        for p in self._providers:
+            for s in p.manifest():
+                specs.append(s)
+                owner.setdefault(s.name, p)
+        self._owner = owner
+        return specs
+
+    def invoke(self, name: str, args: dict) -> ToolResult:
+        if self._owner is None:
+            self.manifest()
+        p = self._owner.get(name)
+        if p is None:
+            return ToolResult(ok=False, error=f"unknown tool: {name}")
+        return p.invoke(name, args)
+
+
+class LlmkbToolProvider:
+    """Expose an llmkb knowledge base as read/write tools by shelling out to the
+    `llmkb` CLI. Adapts llmkb's plain commands to the ToolProvider contract -
+    llmkb itself stays unaware of madosho. The KB directory is fixed at
+    construction; invoke() never raises into the loop."""
+
+    def __init__(self, kb_dir: str, llmkb_argv: list[str] | None = None):
+        self.kb_dir = kb_dir
+        self.llmkb_argv = list(llmkb_argv or ["llmkb"])
+
+    def manifest(self) -> list[ToolSpec]:
+        return [
+            ToolSpec(
+                name="kb_add_page",
+                description=(
+                    "Record a durable finding as a page in the knowledge base. "
+                    "type is summary (one page per source), concept (synthesis "
+                    "across sources), or entity (a person, org, system, or "
+                    "product). Always set sources to the documents the finding "
+                    "came from. Check kb_get_page first to avoid a duplicate title."),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string",
+                                 "enum": ["summary", "concept", "entity"]},
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "sources": {"type": "array", "items": {"type": "string"}},
+                        "body": {"type": "string"},
+                    },
+                    "required": ["type", "title", "description"],
+                },
+            ),
+            ToolSpec(
+                name="kb_get_page",
+                description=("Read one knowledge-base page by title "
+                             "(case-insensitive) before updating or to avoid duplicates."),
+                parameters={
+                    "type": "object",
+                    "properties": {"title": {"type": "string"}},
+                    "required": ["title"],
+                },
+            ),
+        ]
+
+    def invoke(self, name: str, args: dict) -> ToolResult:
+        try:
+            if name == "kb_add_page":
+                return self._add_page(args)
+            if name == "kb_get_page":
+                return self._get_page(args)
+            return ToolResult(ok=False, error=f"unknown tool: {name}")
+        except Exception as exc:  # never raise into the loop
+            return ToolResult(ok=False, error=f"{name} failed: {exc}")
+
+    def _run(self, argv: list[str], stdin: str | None = None) -> ToolResult:
+        proc = subprocess.run(self.llmkb_argv + argv, capture_output=True,
+                              text=True, timeout=_TIMEOUT_S, input=stdin)
+        if proc.returncode != 0:
+            return ToolResult(ok=False, error=(proc.stderr or proc.stdout).strip())
+        out = proc.stdout.strip()
+        return ToolResult(ok=True, data=json.loads(out) if out else None)
+
+    def _add_page(self, args: dict) -> ToolResult:
+        argv = ["add-page", "--kb", self.kb_dir,
+                "--type", str(args["type"]),
+                "--title", str(args["title"]),
+                "--description", str(args.get("description", ""))]
+        tags = args.get("tags") or []
+        if tags:
+            argv += ["--tags", ",".join(str(t) for t in tags)]
+        for src in (args.get("sources") or []):
+            argv += ["--source", str(src)]
+        argv += ["--body-file", "-", "--json"]
+        return self._run(argv, stdin=str(args.get("body", "")))
+
+    def _get_page(self, args: dict) -> ToolResult:
+        return self._run(["get-page", str(args["title"]),
+                          "--kb", self.kb_dir, "--json"])

@@ -11,7 +11,7 @@ from typing import Callable
 from .agent_md import load_default_autonomous_md
 from .llm import AnyLlmClient, LlmClient
 from .loop import run_loop
-from .tools import CliToolProvider, ToolProvider
+from .tools import CliToolProvider, LlmkbToolProvider, MultiToolProvider, ToolProvider
 from .types import (
     Citation,
     LlmEndpoint,
@@ -23,7 +23,8 @@ from .types import (
 
 __all__ = [
     "run", "Report", "Citation", "RunBudget", "LlmEndpoint", "ToolSpec",
-    "ToolResult", "ToolProvider", "CliToolProvider", "LlmClient", "AnyLlmClient",
+    "ToolResult", "ToolProvider", "CliToolProvider", "LlmkbToolProvider",
+    "MultiToolProvider", "LlmClient", "AnyLlmClient",
     "load_default_autonomous_md",
 ]
 
