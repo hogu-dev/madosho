@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from typing import Any
 
 from . import core, http
@@ -193,6 +194,28 @@ def cmd_upload_document(args: argparse.Namespace) -> int:
     else:
         print(f"document {final['id']}  {final['status']}")
     return 1 if failed else 0
+
+
+def cmd_import_kb(args: argparse.Namespace) -> int:
+    import base64
+    from . import kb_pack
+    try:
+        filename, content = kb_pack.pack_kb(args.path)
+    except kb_pack.KbPackError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    result = core.upload_document(content_b64=b64, filename=filename, corpus=args.corpus)
+    doc_id = result.get("id")
+    if args.no_wait or doc_id is None:
+        final = result
+    else:
+        final = core.wait_for_document(doc_id, on_event=_on_event_printer)
+    if args.json:
+        _emit(final)
+    else:
+        print(f"imported KB {args.path} as document {doc_id} ({final.get('status')})")
+    return 1 if final.get("status") == "failed" else 0
 
 
 def cmd_build_pipeline(args: argparse.Namespace) -> int:

@@ -109,6 +109,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(p)
     p.set_defaults(func=commands.cmd_upload_document)
 
+    p = sub.add_parser("import-kb", help="import an llmkb knowledge base as one document")
+    p.add_argument("path", help="path to the KB directory")
+    p.add_argument("--corpus", help="corpus to add the imported document to")
+    p.add_argument("--no-wait", action="store_true", dest="no_wait",
+                   help="return immediately instead of waiting for indexing")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_import_kb)
+
     p = sub.add_parser("build-pipeline", help="build a new pipeline on a document")
     p.add_argument("document_id", type=int)
     p.add_argument("name")
