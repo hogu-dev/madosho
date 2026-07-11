@@ -65,3 +65,38 @@ def test_env_fallback_for_provider_model(capsys, monkeypatch):
     rc = cli.main(["run", "--prompt", "q"])
     assert rc == 0
     assert captured["provider"] == "envprov" and captured["model"] == "envmodel"
+
+
+def test_cli_kb_flag_composes_providers(monkeypatch):
+    captured = {}
+
+    def fake_run(prompt, *, tools, llm, autonomous_md=None, budget=None):
+        captured["tools"] = tools
+        return Report(markdown="ok")
+
+    monkeypatch.setattr(cli, "run", fake_run)
+    rc = cli.main([
+        "run", "--prompt", "hi", "--kb", "/tmp/kb",
+        "--provider", "openai", "--model", "gpt-x",
+    ])
+    assert rc == 0
+    tools = captured["tools"]
+    assert type(tools).__name__ == "MultiToolProvider"
+    assert any(type(p).__name__ == "LlmkbToolProvider" and p.kb_dir == "/tmp/kb"
+               for p in tools._providers)
+
+
+def test_cli_without_kb_is_plain_provider(monkeypatch):
+    captured = {}
+
+    def fake_run(prompt, *, tools, llm, autonomous_md=None, budget=None):
+        captured["tools"] = tools
+        return Report(markdown="ok")
+
+    monkeypatch.setattr(cli, "run", fake_run)
+    rc = cli.main([
+        "run", "--prompt", "hi",
+        "--provider", "openai", "--model", "gpt-x",
+    ])
+    assert rc == 0
+    assert type(captured["tools"]).__name__ == "CliToolProvider"
