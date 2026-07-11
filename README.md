@@ -286,7 +286,18 @@ corpora, upload, build pipelines over HTTP): `docs/HEADLESS.md`.
 
 ## Install
 
-Not yet on PyPI; install from source (Python >= 3.11):
+madosho ships as three PyPI packages so you install only what you need:
+
+| Package | `pip install …` | Use it when you want to… |
+|---|---|---|
+| **madosho-cli** | `madosho-cli` | drive a running madosho from the shell or an agent (zero dependencies) |
+| **madosho-mcp** | `madosho-mcp` | expose a madosho corpus to an MCP host (Claude Desktop, IDEs, agents) |
+| **madosho** | `madosho[server]` | run the full server/framework yourself |
+
+`madosho-cli` and `madosho-mcp` are lightweight HTTP clients — no server, no Postgres,
+no model stack. The server package pulls `madosho-cli` in automatically.
+
+To run the full server or develop from source (Python >= 3.11):
 
 ```bash
 pip install -e ".[local]"
@@ -304,13 +315,17 @@ install only what your pipeline uses:
 | `qdrant` | qdrant-client | `qdrant` store (server; in-process local mode for tests) |
 | `server` | fastapi, uvicorn, sqlalchemy, psycopg, procrastinate, any-llm-sdk, python-multipart | the service platform (control + query planes + worker) |
 | `research` | any-llm-sdk | the standalone `research_agent` package |
-| `mcp` | mcp>=1.8,<2 | the MCP server (`madosho-mcp`) |
 | `local` | all of `docling`, `lancedb`, `models` | the default library pipeline |
 | `dev` | pytest, fpdf2, build, packaging, testcontainers, httpx, openai | running the test suite |
 
 Core itself depends only on `pydantic` and `pyyaml`. Dependency floors are
 **tested floors** -- the suite runs against every declared minimum (enforced by
 `tests/unit/test_scaffold.py`).
+
+> **Dev layout:** `madosho_cli/` and `madosho_mcp/` stay at the repo root; their
+> standalone PyPI build configs live under `packaging/`. The test suite imports every
+> package straight from the source tree (`pythonpath` in `pyproject.toml`), so a plain
+> `pytest` run needs no editable install of the split-out clients.
 
 ## How it works
 
