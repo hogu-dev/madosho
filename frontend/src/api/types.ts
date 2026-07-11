@@ -377,7 +377,7 @@ export interface AlchemyLedger {
   from_prior: number[];
   unconsulted: number[];
   failures: Record<string, string>;
-  complete: boolean;
+  complete: boolean | null;   // null in search mode: coverage-complete is not a promise it makes
   shortfall?: string | null;               // honest-shortfall note when coverage fell short
   summary?: string | null;
 }

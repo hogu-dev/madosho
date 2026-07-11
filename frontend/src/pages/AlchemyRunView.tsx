@@ -75,7 +75,7 @@ export function AlchemyRunView() {
 
   const load = () => {
     if (!goalRef || !Number.isFinite(v)) return;
-    api.getAlchemyRun(goalRef, v).then(setRun).catch((e) => setError(String(e)));
+    api.getAlchemyRun(goalRef, v).then((r) => { setRun(r); setError(null); }).catch((e) => setError(String(e)));
   };
   useEffect(load, [goalRef, v]);
   usePolling(load, 2500, run?.status === "pending" || run?.status === "running");
@@ -133,8 +133,10 @@ export function AlchemyRunView() {
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", ...mono(12, "var(--ink)") }}>
             <span>consulted {consultedCount} / {ledger.total_docs} docs</span>
             {(ledger.from_prior?.length ?? 0) > 0 && <span>{ledger.from_prior.length} from prior</span>}
-            <span style={{ color: ledger.complete ? "#4a7a3c" : "var(--oxblood)" }}>
-              {ledger.complete ? "complete" : "incomplete"}</span>
+            {ledger.complete != null && (
+              <span style={{ color: ledger.complete ? "#4a7a3c" : "var(--oxblood)" }}>
+                {ledger.complete ? "complete" : "incomplete"}</span>
+            )}
           </div>
           {ledger.summary && <p style={{ fontSize: 12.5, color: "var(--ink-muted)",
             margin: "8px 0 0", lineHeight: 1.5 }}>{ledger.summary}</p>}

@@ -46,7 +46,7 @@ class CountingLlm:
         # Reserving first makes check+spend atomic while the calls themselves
         # still run concurrently; a provider failure RELEASES the slot,
         # preserving the observable rule that only calls actually made are
-        # counted (test_call_cap_backstop_raises relies on it).
+        # counted (test_failed_provider_call_releases_its_slot relies on it).
         with self._lock:
             if self.max_calls is not None and self.usage.llm_calls >= self.max_calls:
                 raise CallCapExceeded(f"llm call cap reached ({self.max_calls})")

@@ -90,6 +90,15 @@ test("renders the draft as markdown, citations as document links, and a download
   expect(screen.getByRole("button", { name: /Download/ })).toBeInTheDocument();
 });
 
+test("search-mode ledger with complete: null shows no red incomplete indicator", async () => {
+  vi.spyOn(api, "getAlchemyRun").mockResolvedValue({ ...DONE_RUN,
+    ledger: { ...DONE_RUN.ledger, mode: "search", complete: null, shortfall: null } } as any);
+  renderPage();
+  expect(await screen.findByText(/consulted 4 \/ 5 docs/)).toBeInTheDocument();
+  expect(screen.queryByText("incomplete")).not.toBeInTheDocument();
+  expect(screen.queryByText("complete")).not.toBeInTheDocument();
+});
+
 test("a running run shows the working phase and no download", async () => {
   vi.spyOn(api, "getAlchemyRun").mockResolvedValue({ ...DONE_RUN, status: "running",
     is_final: false, stop_reason: null, finished_at: null, draft_markdown: null,
