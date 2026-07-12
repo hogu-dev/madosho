@@ -22,13 +22,14 @@ name: madosho
 # and `madosho_server` live under ./backend; the other packages sit at the root.
 # Container import paths come from the Dockerfile COPYs:
 #   /app/backend/{madosho,madosho_server} + /app/{madosho_cli,madosho_mcp,
-#   madosho_toolserver,research_agent}.
+#   madosho_toolserver,research_agent,alchemy}.
 x-src-mounts: &src-mounts
   - ./backend:/app/backend
   - ./madosho_cli:/app/madosho_cli
   - ./madosho_mcp:/app/madosho_mcp
   - ./madosho_toolserver:/app/madosho_toolserver
   - ./research_agent:/app/research_agent
+  - ./alchemy:/app/alchemy
 
 services:
   init:
