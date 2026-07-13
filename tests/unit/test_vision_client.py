@@ -34,7 +34,8 @@ def test_resolve_vision_client_builds_image_messages(session, monkeypatch):
     session.commit()
 
     captured = {}
-    def fake_complete(messages, provider, model, settings, stream=False):
+    def fake_complete(messages, provider, model, settings, stream=False,
+                      reasoning_effort=None):
         captured.update(messages=messages, provider=provider, model=model,
                         api_base=settings.llm_api_base, api_key=settings.llm_api_key)
         return SimpleNamespace(choices=[SimpleNamespace(
@@ -65,7 +66,7 @@ def test_resolve_vision_client_responses_flavor_builds_input_parts(session, monk
     session.commit()
 
     captured = {}
-    def fake_respond(input_data, provider, model, settings):
+    def fake_respond(input_data, provider, model, settings, reasoning_effort=None):
         captured.update(input_data=input_data, provider=provider, model=model,
                         api_base=settings.llm_api_base)
         return "TRANSCRIPT"

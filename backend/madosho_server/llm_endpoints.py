@@ -30,14 +30,17 @@ def resolve_llm(session, settings, endpoint: "db.LlmEndpoint | None" = None):
         return None, None
     # Capture into locals so the closure is safe after the session closes.
     provider, model, flavor = row.provider, row.model, row.api_flavor
+    effort = row.reasoning_effort
     creds = endpoint_creds(settings, row)
 
     def _call(prompt: str) -> str:
         if flavor == "responses":
             # Responses-API servers take the bare prompt as input_data.
-            return respond(prompt, provider=provider, model=model, settings=creds)
+            return respond(prompt, provider=provider, model=model, settings=creds,
+                           reasoning_effort=effort)
         resp = complete(messages=[{"role": "user", "content": prompt}],
-                        provider=provider, model=model, settings=creds)
+                        provider=provider, model=model, settings=creds,
+                        reasoning_effort=effort)
         return resp.choices[0].message.content
 
     return _call, row
@@ -90,6 +93,7 @@ def resolve_vision_client(session, settings, endpoint: "db.LlmEndpoint | None" =
         return None, None
     # Capture into locals so the closure is safe after the session closes.
     provider, model, flavor = row.provider, row.model, row.api_flavor
+    effort = row.reasoning_effort
     creds = endpoint_creds(settings, row)
 
     def _call(prompt: str, images: list[bytes]) -> str:
@@ -102,14 +106,16 @@ def resolve_vision_client(session, settings, endpoint: "db.LlmEndpoint | None" =
                 parts.append({"type": "input_image", "detail": "auto",
                               "image_url": f"data:image/png;base64,{b64}"})
             return respond([{"role": "user", "content": parts}],
-                           provider=provider, model=model, settings=creds)
+                           provider=provider, model=model, settings=creds,
+                           reasoning_effort=effort)
         content: list[dict] = [{"type": "text", "text": prompt}]
         for png in images:
             b64 = base64.b64encode(png).decode("ascii")
             content.append({"type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{b64}"}})
         resp = complete(messages=[{"role": "user", "content": content}],
-                        provider=provider, model=model, settings=creds)
+                        provider=provider, model=model, settings=creds,
+                        reasoning_effort=effort)
         return resp.choices[0].message.content or ""
 
     return _call, row

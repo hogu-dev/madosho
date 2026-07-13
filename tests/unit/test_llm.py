@@ -87,3 +87,32 @@ def test_respond_ignores_non_text_events(monkeypatch):
               SimpleNamespace(type="response.completed")]
     monkeypatch.setattr(llm, "responses", lambda **kw: iter(events))
     assert llm.respond("q", provider="o", model="m", settings=_settings()) == "answer"
+
+
+def test_complete_forwards_reasoning_effort_when_set(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(llm, "completion", lambda **kw: captured.update(kw))
+    llm.complete([{"role": "user", "content": "hi"}], provider="openai",
+                 model="gpt", settings=_settings(), reasoning_effort="low")
+    assert captured["reasoning_effort"] == "low"
+
+
+def test_complete_omits_reasoning_effort_when_unset(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(llm, "completion", lambda **kw: captured.update(kw))
+    llm.complete([{"role": "user", "content": "hi"}], provider="openai",
+                 model="gpt", settings=_settings())
+    assert "reasoning_effort" not in captured
+
+
+def test_respond_forwards_reasoning_effort_when_set(monkeypatch):
+    captured = {}
+
+    def fake_responses(**kwargs):
+        captured.update(kwargs)
+        return iter(_delta_events("x"))
+
+    monkeypatch.setattr(llm, "responses", fake_responses)
+    llm.respond("q", provider="openai", model="m", settings=_settings(),
+                reasoning_effort="high")
+    assert captured["reasoning_effort"] == "high"

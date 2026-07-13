@@ -22,16 +22,21 @@ def _creds(settings: Settings) -> dict[str, str]:
 
 
 def complete(messages: list[dict], provider: str, model: str,
-             settings: Settings, stream: bool = False) -> Any:
+             settings: Settings, stream: bool = False,
+             reasoning_effort: str | None = None) -> Any:
     """Call the configured provider via any-llm. Returns an OpenAI-shaped
-    completion object (stream=False) or an iterator of chunks (stream=True)."""
+    completion object (stream=False) or an iterator of chunks (stream=True).
+    reasoning_effort, when set, is forwarded into the request body; unset leaves
+    it to any_llm's default (which drops the field for OpenAI)."""
     if not provider or not model:
         raise ProviderNotConfigured("no LLM provider/model specified for this request")
+    extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
     return completion(model=model, provider=provider, messages=messages,
-                      stream=stream, **_creds(settings))
+                      stream=stream, **_creds(settings), **extra)
 
 
-def respond(input_data: Any, provider: str, model: str, settings: Settings) -> str:
+def respond(input_data: Any, provider: str, model: str, settings: Settings,
+            reasoning_effort: str | None = None) -> str:
     """Call a Responses-API endpoint via any-llm and return the output text.
 
     Always streams and joins the output_text deltas rather than reading the
@@ -46,8 +51,9 @@ def respond(input_data: Any, provider: str, model: str, settings: Settings) -> s
     if isinstance(input_data, str):
         input_data = [{"role": "user",
                        "content": [{"type": "input_text", "text": input_data}]}]
+    extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
     events = responses(model=model, provider=provider, input_data=input_data,
-                       stream=True, **_creds(settings))
+                       stream=True, **_creds(settings), **extra)
     parts: list[str] = []
     for ev in events:
         if getattr(ev, "type", None) == "response.output_text.delta":

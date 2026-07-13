@@ -81,7 +81,8 @@ def test_resolve_binds_endpoint_creds(session, monkeypatch):
                                is_default=True)); session.commit()
 
     captured = {}
-    def fake_complete(messages, provider, model, settings, stream=False):
+    def fake_complete(messages, provider, model, settings, stream=False,
+                      reasoning_effort=None):
         captured.update(provider=provider, model=model,
                         api_base=settings.llm_api_base, api_key=settings.llm_api_key)
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ctx"))])
@@ -111,7 +112,7 @@ def test_resolve_llm_responses_flavor_uses_respond(session, monkeypatch):
     session.commit()
 
     captured = {}
-    def fake_respond(input_data, provider, model, settings):
+    def fake_respond(input_data, provider, model, settings, reasoning_effort=None):
         captured.update(input_data=input_data, provider=provider, model=model,
                         api_base=settings.llm_api_base, api_key=settings.llm_api_key)
         return "R-TEXT"
@@ -275,3 +276,28 @@ def test_reasoning_effort_column_roundtrips(tmp_path):
         rows = {r.name: r for r in s.query(db.LlmEndpoint).all()}
         assert rows["codex"].reasoning_effort == "low"
         assert rows["legacy"].reasoning_effort is None   # nullable, defaults to unset
+
+
+def test_resolve_llm_binds_endpoint_reasoning_effort(tmp_path, monkeypatch):
+    from madosho_server import db, llm, llm_endpoints
+    from madosho_server.settings import Settings
+    db.configure_engine(f"sqlite:///{tmp_path/'re2.db'}")
+    db.create_all()
+    with db.SessionLocal() as s:
+        s.add(db.LlmEndpoint(name="codex", provider="openai", model="m",
+                             api_base="http://h/v1", is_default=True,
+                             reasoning_effort="low"))
+        s.commit()
+        settings = Settings(database_url="sqlite://", qdrant_url="",
+                            filestore_dir="", corpora_dir="")
+        captured = {}
+        monkeypatch.setattr(
+            llm, "completion",
+            lambda **kw: (captured.update(kw),
+                          __import__("types").SimpleNamespace(
+                              choices=[__import__("types").SimpleNamespace(
+                                  message=__import__("types").SimpleNamespace(
+                                      content="ok"))]))[1])
+        call, row = llm_endpoints.resolve_llm(s, settings)
+        call("hello")
+        assert captured["reasoning_effort"] == "low"
