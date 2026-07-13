@@ -69,6 +69,21 @@ test("launching sends the chosen endpoint's provider/model and the typed prompt"
     prompt: "thrust?", source: "rag", document_ids: [], max_rounds: 8,
     llm: { provider: "openai", model: "gemma-4-e4b" },
   });
+  expect(body.reasoning_effort).toBeUndefined();
+});
+
+test("sends reasoning_effort when a preset is picked", async () => {
+  const launch = vi.spyOn(api, "launchResearch")
+    .mockResolvedValue({ id: 8, corpus_id: 1 } as any);
+  renderList();
+  await screen.findByRole("option", { name: "gemma4-local" });
+  await screen.findByLabelText(/reasoning effort/i);
+  fireEvent.change(screen.getByLabelText("Research question"), { target: { value: "thrust?" } });
+  fireEvent.change(screen.getByLabelText(/reasoning effort/i), { target: { value: "medium" } });
+  fireEvent.click(screen.getByRole("button", { name: /Launch/ }));
+  await waitFor(() => expect(launch).toHaveBeenCalled());
+  const [, body] = launch.mock.calls.at(-1)!;
+  expect((body as any).reasoning_effort).toBe("medium");
 });
 
 test("run history links carry the corpus id for the detail fetch", async () => {

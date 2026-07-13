@@ -98,6 +98,20 @@ test("model select defaults to the default endpoint; launch sends the payload an
   expect(await screen.findByText("run detail stub")).toBeInTheDocument();
 });
 
+test("sends reasoning_effort when a preset is picked", async () => {
+  const launch = vi.spyOn(api, "launchAlchemyRun").mockResolvedValue(
+    { id: 31, goal_id: 3, version: 5, status: "pending" } as any);
+  renderPage();
+  await screen.findByRole("option", { name: "granite-local" });
+  await screen.findByLabelText(/reasoning effort/i);
+  fireEvent.change(screen.getByLabelText(/reasoning effort/i), { target: { value: "low" } });
+  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  await waitFor(() => {
+    const body = launch.mock.calls.at(-1)?.[1] as any;
+    expect(body.reasoning_effort).toBe("low");
+  });
+});
+
 test("cancel on a running run confirms then POSTs the DB id", async () => {
   const cancel = vi.spyOn(api, "cancelAlchemyRun").mockResolvedValue({ status: "cancelled" });
   renderPage();

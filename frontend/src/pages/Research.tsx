@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
-import type { Corpus, Document, LlmEndpoint, ResearchRun } from "../api/types";
+import type { Corpus, Document, LlmEndpoint, ResearchLaunch, ResearchRun } from "../api/types";
 import { usePolling } from "../hooks/usePolling";
 import { Panel, Heading, Button, SegmentedToggle, StatusDot, EmptyState } from "../design/primitives";
 import { ConfirmDialog } from "../design/ConfirmDialog";
@@ -31,6 +31,7 @@ export function Research() {
   const [docIds, setDocIds] = useState<number[]>([]);
   const [budget, setBudget] = useState(100000);
   const [rounds, setRounds] = useState(8);
+  const [effort, setEffort] = useState("");   // "" = Endpoint default (omit)
   const [runs, setRuns] = useState<ResearchRun[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,11 +71,13 @@ export function Research() {
     if (cid == null || ep == null) return;
     setBusy(true); setError(null);
     try {
-      const run = await api.launchResearch(cid, {
+      const body: ResearchLaunch = {
         prompt: prompt.trim(), source, document_ids: source === "whole-text" ? docIds : [],
         budget_chars: budget, max_rounds: rounds,
         llm: { provider: ep.provider, model: ep.model },
-      });
+      };
+      if (effort) body.reasoning_effort = effort;
+      const run = await api.launchResearch(cid, body);
       setPrompt("");
       nav(`/research/${run.id}?corpus=${cid}`);
     } catch (e) {
@@ -175,6 +178,17 @@ export function Research() {
             <input aria-label="Max rounds" type="number" min={1} max={20} value={rounds}
               onChange={(e) => setRounds(Number.parseInt(e.target.value, 10) || 8)}
               style={{ ...selectStyle, width: 70 }} />
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <span style={mono(11, "var(--ink-muted)")}>Reasoning</span>
+            <select aria-label="Reasoning effort" value={effort}
+              onChange={(e) => setEffort(e.target.value)} style={selectStyle}>
+              <option value="">Endpoint default</option>
+              <option value="minimal">minimal</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
           </label>
           <span style={{ marginLeft: "auto" }}>
             <Button onClick={launch} disabled={!canLaunch}>

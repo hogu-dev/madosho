@@ -239,6 +239,7 @@ export interface ResearchLaunch {
   budget_chars: number;
   max_rounds: number;
   llm: { provider: string; model: string };
+  reasoning_effort?: string;   // omitted -> the endpoint's own default
 }
 
 export interface CorpusChip { id: number; name: string; }
@@ -447,4 +448,5 @@ export interface AlchemyRunLaunch {
   max_rounds?: number;
   max_llm_calls?: number;
   concurrency?: number;   // 1-8; a parallel stage-E slice adds it server-side (default 1)
+  reasoning_effort?: string;   // omitted -> the endpoint's own default
 }

@@ -39,6 +39,7 @@ export function AlchemyGoalDetail() {
   const [guidance, setGuidance] = useState("");
   const [maxCalls, setMaxCalls] = useState("");      // empty = no cap
   const [concurrency, setConcurrency] = useState(1);
+  const [effort, setEffort] = useState("");   // "" = Endpoint default (omit)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<AlchemyRunSummary | null>(null);
@@ -78,6 +79,7 @@ export function AlchemyGoalDetail() {
       if (guidance.trim()) body.guidance = guidance.trim();
       const cap = Number.parseInt(maxCalls, 10);
       if (Number.isFinite(cap) && cap >= 1) body.max_llm_calls = cap;
+      if (effort) body.reasoning_effort = effort;
       const run = await api.launchAlchemyRun(goal.id, body);
       setGuidance("");
       nav(`/alchemy/${goal.id}/runs/${run.version}`);
@@ -179,6 +181,17 @@ export function AlchemyGoalDetail() {
               onChange={(e) => setConcurrency(
                 Math.min(8, Math.max(1, Number.parseInt(e.target.value, 10) || 1)))}
               style={{ ...selectStyle, width: 60 }} />
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <span style={mono(11, "var(--ink-muted)")}>Reasoning</span>
+            <select aria-label="Reasoning effort" value={effort}
+              onChange={(e) => setEffort(e.target.value)} style={selectStyle}>
+              <option value="">Endpoint default</option>
+              <option value="minimal">minimal</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
           </label>
           <span style={{ marginLeft: "auto" }}>
             <Button onClick={launch} disabled={!canLaunch}>
