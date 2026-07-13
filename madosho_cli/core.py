@@ -301,7 +301,8 @@ def alchemy_run(ref: str, provider: str | None = None, model: str | None = None,
                 budget_chars: int = 100_000, max_rounds: int = 8,
                 max_llm_calls: int | None = None,
                 fresh_coverage: bool = False,
-                concurrency: int = 1) -> dict[str, Any]:
+                concurrency: int = 1,
+                reasoning_effort: str | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {"budget_chars": budget_chars,
                                "max_rounds": max_rounds,
                                "concurrency": concurrency}
@@ -319,6 +320,8 @@ def alchemy_run(ref: str, provider: str | None = None, model: str | None = None,
     if max_llm_calls is not None:
         payload["max_llm_calls"] = max_llm_calls
     payload["fresh_coverage"] = fresh_coverage
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
     return http.post_json(
         f"{http.control_base()}/alchemy/goals/{ref}/runs", payload)
 

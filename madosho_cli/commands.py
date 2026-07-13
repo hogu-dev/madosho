@@ -337,7 +337,8 @@ def cmd_run_goal(args: argparse.Namespace) -> int:
             "(omit both to use the server's default LLM endpoint)")
     data = core.alchemy_run(args.goal, args.provider, args.model,
                             coverage=args.coverage, guidance=args.guidance,
-                            max_llm_calls=args.max_llm_calls)
+                            max_llm_calls=args.max_llm_calls,
+                            reasoning_effort=args.reasoning_effort)
     _emit_or_print(args, data,
                    lambda d: f"started {args.goal} v{d['version']} "
                              f"({d['status']}); poll goal-runs")
@@ -395,7 +396,8 @@ def cmd_alchemy_run(args: argparse.Namespace) -> int:
                             based_on_version=args.based_on,
                             max_llm_calls=args.max_llm_calls,
                             fresh_coverage=args.fresh_coverage,
-                            concurrency=args.concurrency)
+                            concurrency=args.concurrency,
+                            reasoning_effort=args.reasoning_effort)
     version = data["version"]
     if args.no_wait:
         _emit_or_print(args, data, lambda d: f"started {args.ref} v{d['version']} (pending)")

@@ -178,6 +178,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="LLM provider (default: the server's default llm endpoint)")
     p.add_argument("--model", default=None,
                    help="LLM model name (default: the server's default llm endpoint)")
+    p.add_argument("--reasoning-effort", dest="reasoning_effort", default=None,
+                   help="model-native reasoning effort (e.g. low/high); "
+                        "omit to use the endpoint's default")
     _add_json(p)
     p.set_defaults(func=commands.cmd_run_goal)
 
@@ -244,6 +247,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-llm-calls", dest="max_llm_calls", type=int, default=None)
     p.add_argument("--concurrency", type=int, default=1,
                    help="parallel work units per run (1-8, default 1)")
+    p.add_argument("--reasoning-effort", dest="reasoning_effort", default=None,
+                   help="model-native reasoning effort (e.g. low/high); "
+                        "omit to use the endpoint's default")
     p.add_argument("--no-wait", dest="no_wait", action="store_true")
     _add_json(p)
     p.set_defaults(func=commands.cmd_alchemy_run)

@@ -448,13 +448,17 @@ _TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "LLM model name -- give together with 'provider', or omit BOTH to use the server's default llm endpoint (a lone one is rejected)",
                 },
+                "reasoning_effort": {
+                    "type": "string",
+                    "description": "model-native reasoning effort (e.g. low, high); omit to use the endpoint's default",
+                },
             },
             "required": ["goal", "max_llm_calls"],
         },
         "invocation": {
             "subcommand": "run-goal",
             "positional": ["goal", "max_llm_calls"],
-            "options": ["guidance", "coverage", "provider", "model"],
+            "options": ["guidance", "coverage", "provider", "model", "reasoning_effort"],
         },
     },
 ]

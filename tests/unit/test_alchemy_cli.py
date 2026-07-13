@@ -149,6 +149,26 @@ def test_run_goal_passes_optional_fields(fake_http):
     assert body["max_llm_calls"] == 5
 
 
+def test_run_goal_passes_reasoning_effort(fake_http):
+    fh = fake_http({
+        "/alchemy/goals/find_vuln/runs": _run(version=2),
+    })
+    cli_main.main(["alchemy", "run", "find_vuln", "--provider", "openai", "--model", "m",
+                   "--reasoning-effort", "low", "--no-wait", "--json"])
+    _, _, body = fh.calls[-1]
+    assert body["reasoning_effort"] == "low"
+
+
+def test_run_goal_omits_reasoning_effort_by_default(fake_http):
+    fh = fake_http({
+        "/alchemy/goals/find_vuln/runs": _run(version=2),
+    })
+    cli_main.main(["alchemy", "run", "find_vuln", "--provider", "openai", "--model", "m",
+                   "--no-wait", "--json"])
+    _, _, body = fh.calls[-1]
+    assert "reasoning_effort" not in body
+
+
 def test_run_goal_waits_until_terminal(fake_http, capsys, monkeypatch):
     """Without --no-wait, the CLI polls status until done, printing progress."""
     calls = {"n": 0}

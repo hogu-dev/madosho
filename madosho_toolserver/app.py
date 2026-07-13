@@ -219,6 +219,9 @@ class RunGoalBody(BaseModel):
         None, description="LLM provider (default: the server's default llm endpoint)")
     model: str | None = Field(
         None, description="LLM model name (default: the server's default llm endpoint)")
+    reasoning_effort: str | None = Field(
+        None, description="model-native reasoning effort (e.g. low, high); "
+                          "omit to use the endpoint's default")
 
 
 @app.get("/health")
@@ -337,6 +340,7 @@ def run_goal(body: RunGoalBody):
         coverage=body.coverage,
         guidance=body.guidance,
         max_llm_calls=body.max_llm_calls,
+        reasoning_effort=body.reasoning_effort,
     ))
 
 

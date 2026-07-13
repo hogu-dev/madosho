@@ -398,12 +398,13 @@ def test_manifest_run_goal_params():
     # an agent must never be able to launch an uncapped run
     assert t["parameters"]["required"] == ["goal", "max_llm_calls"]
     assert set(t["parameters"]["properties"]) == {
-        "goal", "max_llm_calls", "guidance", "coverage", "provider", "model"
+        "goal", "max_llm_calls", "guidance", "coverage", "provider", "model",
+        "reasoning_effort",
     }
     assert t["invocation"] == {
         "subcommand": "run-goal",
         "positional": ["goal", "max_llm_calls"],
-        "options": ["guidance", "coverage", "provider", "model"],
+        "options": ["guidance", "coverage", "provider", "model", "reasoning_effort"],
     }
 
 
