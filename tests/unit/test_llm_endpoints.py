@@ -316,3 +316,78 @@ def test_endpoint_reasoning_effort_lookup(tmp_path):
         assert llm_endpoints.endpoint_reasoning_effort(s, "openai", "m") == "low"
         assert llm_endpoints.endpoint_reasoning_effort(s, "openai", "other") is None
         assert llm_endpoints.endpoint_reasoning_effort(s, "nope", "nope") is None
+
+
+# ---- per-model reasoning ladders + upstream model listing ------------------
+
+def test_reasoning_ladder_by_version():
+    # longest-prefix wins: the 5.6 family adds max; 5.5/5.4/5.3 top out at xhigh;
+    # an unrecognised gpt-5.x still gets the generic ladder.
+    assert llm_endpoints.reasoning_ladder("gpt-5.6-sol") == (
+        ["none", "low", "medium", "high", "xhigh", "max"], "medium")
+    assert llm_endpoints.reasoning_ladder("gpt-5.5") == (
+        ["none", "low", "medium", "high", "xhigh"], "medium")
+    assert llm_endpoints.reasoning_ladder("gpt-5.4-mini") == (
+        ["none", "low", "medium", "high", "xhigh"], "medium")
+    assert llm_endpoints.reasoning_ladder("gpt-5.3-codex-spark") == (
+        ["none", "low", "medium", "high", "xhigh"], "medium")
+    assert llm_endpoints.reasoning_ladder("gpt-5.1") == (
+        ["none", "low", "medium", "high", "xhigh"], "medium")
+
+
+def test_reasoning_ladder_empty_for_review_and_unknown():
+    # codex-auto-review is a fixed-preset model; non-reasoning + unknown models
+    # expose no effort control (empty ladder, no default).
+    assert llm_endpoints.reasoning_ladder("codex-auto-review") == ([], None)
+    assert llm_endpoints.reasoning_ladder("gemma-4-e4b") == ([], None)
+    assert llm_endpoints.reasoning_ladder("") == ([], None)
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+    def raise_for_status(self):
+        pass
+    def json(self):
+        return self._payload
+
+
+def test_endpoint_models_lists_upstream_with_ladders(session, monkeypatch):
+    monkeypatch.setenv("CK", "k")
+    row = db.LlmEndpoint(name="codex", provider="openai", model="gpt-5.5",
+                         api_base="http://proxy:10531/v1", key_env_var="CK",
+                         is_default=True, api_flavor="responses")
+    session.add(row); session.commit()
+
+    captured = {}
+    def fake_get(url, headers=None, timeout=None):
+        captured.update(url=url, headers=headers, timeout=timeout)
+        return _FakeResp({"data": [{"id": "gpt-5.6-sol"}, {"id": "gpt-5.5"},
+                                   {"id": "codex-auto-review"}, {"id": None}, {}]})
+    monkeypatch.setattr(llm_endpoints.httpx, "get", fake_get)
+
+    out = llm_endpoints.endpoint_models(BASE, row)
+    # bound to the endpoint's OWN api_base + key
+    assert captured["url"] == "http://proxy:10531/v1/models"
+    assert captured["headers"]["Authorization"] == "Bearer k"
+    # non-string / empty ids dropped; each surviving model carries its ladder
+    assert [m["id"] for m in out] == ["gpt-5.6-sol", "gpt-5.5", "codex-auto-review"]
+    assert out[0]["reasoning_efforts"][-1] == "max"      # 5.6 -> max
+    assert out[0]["default_effort"] == "medium"
+    assert out[1]["reasoning_efforts"][-1] == "xhigh"    # 5.5 -> xhigh
+    assert out[2]["reasoning_efforts"] == [] and out[2]["default_effort"] is None
+
+
+def test_endpoint_models_falls_back_to_pinned_model_on_upstream_error(session, monkeypatch):
+    import httpx
+    row = db.LlmEndpoint(name="gemma", provider="openai", model="gemma-4-e4b",
+                         api_base="http://h:8081/v1", is_default=True)
+    session.add(row); session.commit()
+
+    def boom(*a, **k):
+        raise httpx.ConnectError("down")
+    monkeypatch.setattr(llm_endpoints.httpx, "get", boom)
+
+    # upstream unreachable -> the caller still gets the endpoint's pinned model
+    assert llm_endpoints.endpoint_models(BASE, row) == [
+        {"id": "gemma-4-e4b", "reasoning_efforts": [], "default_effort": None}]

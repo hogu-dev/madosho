@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import type { Corpus, Document, LlmEndpoint, ResearchLaunch, ResearchRun } from "../api/types";
 import { usePolling } from "../hooks/usePolling";
+import { useEndpointModels } from "../hooks/useEndpointModels";
 import { Panel, Heading, Button, SegmentedToggle, StatusDot, EmptyState } from "../design/primitives";
 import { ConfirmDialog } from "../design/ConfirmDialog";
 
@@ -24,14 +25,14 @@ export function Research() {
   const [corpora, setCorpora] = useState<Corpus[]>([]);
   const [corpus, setCorpus] = useState("");
   const [endpoints, setEndpoints] = useState<LlmEndpoint[]>([]);
-  const [model, setModel] = useState("");            // an endpoint name
+  const { ep, endpointName, setEndpointName, models, modelId, setModelId,
+    ladder, effort, setEffort } = useEndpointModels(endpoints);
   const [prompt, setPrompt] = useState("");
   const [source, setSource] = useState<"rag" | "whole-text">("rag");
   const [docs, setDocs] = useState<Document[]>([]);
   const [docIds, setDocIds] = useState<number[]>([]);
   const [budget, setBudget] = useState(100000);
   const [rounds, setRounds] = useState(8);
-  const [effort, setEffort] = useState("");   // "" = Endpoint default (omit)
   const [runs, setRuns] = useState<ResearchRun[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,10 +42,7 @@ export function Research() {
   useEffect(() => {
     api.listCorpora().then((cs) => { setCorpora(cs); setCorpus((c) => c || cs[0]?.name || ""); })
       .catch(() => setCorpora([]));
-    api.listLlmEndpoints().then((eps) => {
-      setEndpoints(eps);
-      setModel((m) => m || ((eps.find((e) => e.is_default) ?? eps[0])?.name ?? ""));
-    }).catch(() => setEndpoints([]));
+    api.listLlmEndpoints().then(setEndpoints).catch(() => setEndpoints([]));
   }, []);
 
   const cid = corpora.find((c) => c.name === corpus)?.id ?? null;
@@ -64,7 +62,6 @@ export function Research() {
     setDocIds([]);
   }, [cid]);
 
-  const ep = endpoints.find((e) => e.name === model) ?? null;
   const canLaunch = prompt.trim().length > 0 && cid != null && ep != null && !busy;
 
   const launch = async () => {
@@ -74,7 +71,7 @@ export function Research() {
       const body: ResearchLaunch = {
         prompt: prompt.trim(), source, document_ids: source === "whole-text" ? docIds : [],
         budget_chars: budget, max_rounds: rounds,
-        llm: { provider: ep.provider, model: ep.model },
+        llm: { provider: ep.provider, model: modelId || ep.model },
       };
       if (effort) body.reasoning_effort = effort;
       const run = await api.launchResearch(cid, body);
@@ -103,7 +100,7 @@ export function Research() {
   const activeRuns = runs.filter((r) => ACTIVE(r.status));
 
   return (
-    <Panel style={{ padding: "28px 32px", maxWidth: 880 }}>
+    <Panel style={{ padding: "28px 32px", maxWidth: 1360 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <Heading level={1} style={{ margin: 0 }}>Research</Heading>
         <span style={{ ...mono(11, "var(--gilt)"), letterSpacing: "0.08em", textTransform: "uppercase",
@@ -135,14 +132,34 @@ export function Research() {
             <span style={{ fontSize: 12.5, color: "var(--oxblood)" }}>
               needs an LLM endpoint — add one in Settings</span>
           ) : (
-            <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
-              <span style={{ ...mono(10, "var(--ink-muted)"), letterSpacing: "0.08em",
-                textTransform: "uppercase" }}>Model</span>
-              <select aria-label="Model" value={model} onChange={(e) => setModel(e.target.value)}
-                style={selectStyle}>
-                {endpoints.map((e) => <option key={e.id} value={e.name}>{e.name}</option>)}
-              </select>
-            </label>
+            <>
+              <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ ...mono(10, "var(--ink-muted)"), letterSpacing: "0.08em",
+                  textTransform: "uppercase" }}>Endpoint</span>
+                <select aria-label="Endpoint" value={endpointName}
+                  onChange={(e) => setEndpointName(e.target.value)} style={selectStyle}>
+                  {endpoints.map((e) => <option key={e.id} value={e.name}>{e.name}</option>)}
+                </select>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ ...mono(10, "var(--ink-muted)"), letterSpacing: "0.08em",
+                  textTransform: "uppercase" }}>Model</span>
+                <select aria-label="Model" value={modelId}
+                  onChange={(e) => setModelId(e.target.value)} style={selectStyle}>
+                  {models.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+                </select>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ ...mono(10, "var(--ink-muted)"), letterSpacing: "0.08em",
+                  textTransform: "uppercase" }}>Reasoning</span>
+                <select aria-label="Reasoning effort" value={effort}
+                  onChange={(e) => setEffort(e.target.value)} style={selectStyle}
+                  disabled={ladder.length === 0}>
+                  <option value="">Endpoint default</option>
+                  {ladder.map((lvl) => <option key={lvl} value={lvl}>{lvl}</option>)}
+                </select>
+              </label>
+            </>
           )}
         </div>
 
@@ -178,17 +195,6 @@ export function Research() {
             <input aria-label="Max rounds" type="number" min={1} max={20} value={rounds}
               onChange={(e) => setRounds(Number.parseInt(e.target.value, 10) || 8)}
               style={{ ...selectStyle, width: 70 }} />
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
-            <span style={mono(11, "var(--ink-muted)")}>Reasoning</span>
-            <select aria-label="Reasoning effort" value={effort}
-              onChange={(e) => setEffort(e.target.value)} style={selectStyle}>
-              <option value="">Endpoint default</option>
-              <option value="minimal">minimal</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-            </select>
           </label>
           <span style={{ marginLeft: "auto" }}>
             <Button onClick={launch} disabled={!canLaunch}>

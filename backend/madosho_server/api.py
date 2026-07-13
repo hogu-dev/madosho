@@ -366,6 +366,13 @@ class LlmEndpointRead(BaseModel):
     reasoning_effort: str | None
 
 
+class EndpointModel(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    id: str                                 # the model name the upstream serves
+    reasoning_efforts: list[str]            # valid reasoning-effort levels ([] = none beyond default)
+    default_effort: str | None              # the model's own default effort, when it has a ladder
+
+
 SessionDep = Annotated[Session, Depends(db.get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 EnqueueDep = Annotated[Callable[[Session, int], None], Depends(get_enqueue)]
@@ -2478,6 +2485,19 @@ def create_llm_endpoint(body: LlmEndpointCreate, session: SessionDep):
 def list_llm_endpoints(session: SessionDep):
     rows = session.scalars(select(db.LlmEndpoint).order_by(db.LlmEndpoint.id)).all()
     return [_endpoint_read(r) for r in rows]
+
+
+@app.get("/llm-endpoints/{endpoint_id}/models", response_model=list[EndpointModel])
+def list_endpoint_models(endpoint_id: int, session: SessionDep, settings: SettingsDep):
+    """The models this endpoint's upstream serves, each with its reasoning
+    ladder. Populates the launch forms' model dropdown so a proxy connection
+    (e.g. codex-proxy) fans out into its many models rather than the single
+    pinned one. Always returns >=1 entry (falls back to the pinned model when
+    the upstream /v1/models is unreachable)."""
+    row = session.get(db.LlmEndpoint, endpoint_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="endpoint not found")
+    return llm_endpoints.endpoint_models(settings, row)
 
 
 @app.put("/llm-endpoints/{endpoint_id}", response_model=LlmEndpointRead)

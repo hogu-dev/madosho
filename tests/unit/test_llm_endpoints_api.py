@@ -239,3 +239,27 @@ def test_reasoning_effort_over_cap_rejected(client):
     r = client.post("/llm-endpoints", json={"name": "e3", "provider": "openai",
         "model": "m", "api_base": "http://h/v1", "reasoning_effort": "x" * 33})
     assert r.status_code == 422
+
+
+def test_list_endpoint_models_route(client, monkeypatch):
+    from madosho_server import llm_endpoints
+    r = client.post("/llm-endpoints", json={"name": "codex", "provider": "openai",
+        "model": "gpt-5.5", "api_base": "http://proxy:10531/v1", "api_flavor": "responses"})
+    assert r.status_code == 201, r.text
+    eid = r.json()["id"]
+
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"data": [{"id": "gpt-5.6-sol"}, {"id": "codex-auto-review"}]}
+    monkeypatch.setattr(llm_endpoints.httpx, "get", lambda *a, **k: _Resp())
+
+    got = client.get(f"/llm-endpoints/{eid}/models")
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert [m["id"] for m in body] == ["gpt-5.6-sol", "codex-auto-review"]
+    assert body[0]["reasoning_efforts"][-1] == "max"
+    assert body[1]["reasoning_efforts"] == []
+
+
+def test_list_endpoint_models_404_for_unknown(client):
+    assert client.get("/llm-endpoints/9999/models").status_code == 404

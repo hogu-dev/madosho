@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import type { AlchemyGoal, AlchemyRunLaunch, AlchemyRunSummary, LlmEndpoint } from "../api/types";
 import { usePolling } from "../hooks/usePolling";
+import { useEndpointModels } from "../hooks/useEndpointModels";
 import { Panel, Heading, Button, SegmentedToggle, StatusDot, EmptyState } from "../design/primitives";
 import { ConfirmDialog } from "../design/ConfirmDialog";
 import { BackLink } from "../design/Frame";
@@ -34,12 +35,12 @@ export function AlchemyGoalDetail() {
   const [goal, setGoal] = useState<AlchemyGoal | null>(null);
   const [runs, setRuns] = useState<AlchemyRunSummary[] | null>(null);
   const [endpoints, setEndpoints] = useState<LlmEndpoint[]>([]);
-  const [model, setModel] = useState("");            // an endpoint name
+  const { ep, endpointName, setEndpointName, models, modelId, setModelId,
+    ladder, effort, setEffort } = useEndpointModels(endpoints);
   const [coverage, setCoverage] = useState("search");
   const [guidance, setGuidance] = useState("");
   const [maxCalls, setMaxCalls] = useState("");      // empty = no cap
   const [concurrency, setConcurrency] = useState(1);
-  const [effort, setEffort] = useState("");   // "" = Endpoint default (omit)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<AlchemyRunSummary | null>(null);
@@ -51,10 +52,7 @@ export function AlchemyGoalDetail() {
     if (!goalRef) return;
     api.getAlchemyGoal(goalRef).then((g) => { setGoal(g); setCoverage(g.coverage); })
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load goal"));
-    api.listLlmEndpoints().then((eps) => {
-      setEndpoints(eps);
-      setModel((m) => m || ((eps.find((e) => e.is_default) ?? eps[0])?.name ?? ""));
-    }).catch(() => setEndpoints([]));
+    api.listLlmEndpoints().then(setEndpoints).catch(() => setEndpoints([]));
   }, [goalRef]);
 
   const loadRuns = () => {
@@ -64,7 +62,6 @@ export function AlchemyGoalDetail() {
   useEffect(loadRuns, [goalRef]);
   usePolling(loadRuns, 2500, (runs ?? []).some((r) => ACTIVE(r.status)));
 
-  const ep = endpoints.find((e) => e.name === model) ?? null;
   const canLaunch = goal != null && ep != null && !busy && canWrite;
 
   const launch = async () => {
@@ -73,7 +70,7 @@ export function AlchemyGoalDetail() {
     try {
       const body: AlchemyRunLaunch = {
         coverage: coverage as AlchemyRunLaunch["coverage"],
-        llm: { provider: ep.provider, model: ep.model },
+        llm: { provider: ep.provider, model: modelId || ep.model },
         concurrency,
       };
       if (guidance.trim()) body.guidance = guidance.trim();
@@ -122,7 +119,7 @@ export function AlchemyGoalDetail() {
   const list = runs ?? [];
 
   return (
-    <Panel style={{ padding: "28px 32px", maxWidth: 1080 }}>
+    <Panel style={{ padding: "28px 32px", maxWidth: 1360 }}>
       <BackLink to="/alchemy">Alchemy</BackLink>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
         <Heading level={1} style={{ margin: 0, fontFamily: "var(--font-mono)" }}>{goal.name}</Heading>
@@ -150,14 +147,34 @@ export function AlchemyGoalDetail() {
             <span style={{ fontSize: 12.5, color: "var(--oxblood)" }}>
               needs an LLM endpoint - add one in Settings</span>
           ) : (
-            <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
-              <span style={{ ...mono(10, "var(--ink-muted)"), letterSpacing: "0.08em",
-                textTransform: "uppercase" }}>Model</span>
-              <select aria-label="Model" value={model} onChange={(e) => setModel(e.target.value)}
-                style={selectStyle}>
-                {endpoints.map((e) => <option key={e.id} value={e.name}>{e.name}</option>)}
-              </select>
-            </label>
+            <>
+              <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ ...mono(10, "var(--ink-muted)"), letterSpacing: "0.08em",
+                  textTransform: "uppercase" }}>Endpoint</span>
+                <select aria-label="Endpoint" value={endpointName}
+                  onChange={(e) => setEndpointName(e.target.value)} style={selectStyle}>
+                  {endpoints.map((e) => <option key={e.id} value={e.name}>{e.name}</option>)}
+                </select>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ ...mono(10, "var(--ink-muted)"), letterSpacing: "0.08em",
+                  textTransform: "uppercase" }}>Model</span>
+                <select aria-label="Model" value={modelId}
+                  onChange={(e) => setModelId(e.target.value)} style={selectStyle}>
+                  {models.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+                </select>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ ...mono(10, "var(--ink-muted)"), letterSpacing: "0.08em",
+                  textTransform: "uppercase" }}>Reasoning</span>
+                <select aria-label="Reasoning effort" value={effort}
+                  onChange={(e) => setEffort(e.target.value)} style={selectStyle}
+                  disabled={ladder.length === 0}>
+                  <option value="">Endpoint default</option>
+                  {ladder.map((lvl) => <option key={lvl} value={lvl}>{lvl}</option>)}
+                </select>
+              </label>
+            </>
           )}
         </div>
 
@@ -181,17 +198,6 @@ export function AlchemyGoalDetail() {
               onChange={(e) => setConcurrency(
                 Math.min(8, Math.max(1, Number.parseInt(e.target.value, 10) || 1)))}
               style={{ ...selectStyle, width: 60 }} />
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 7 }}>
-            <span style={mono(11, "var(--ink-muted)")}>Reasoning</span>
-            <select aria-label="Reasoning effort" value={effort}
-              onChange={(e) => setEffort(e.target.value)} style={selectStyle}>
-              <option value="">Endpoint default</option>
-              <option value="minimal">minimal</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-            </select>
           </label>
           <span style={{ marginLeft: "auto" }}>
             <Button onClick={launch} disabled={!canLaunch}>

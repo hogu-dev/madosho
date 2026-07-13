@@ -285,6 +285,15 @@ export interface LlmEndpoint {
   context_window_tokens: number | null; source_chars_budget: number | null;
   reasoning_effort: string | null;
 }
+// A model an endpoint's upstream serves, with the reasoning-effort levels it
+// accepts (empty = no effort control beyond the endpoint default). Drives the
+// launch forms' model dropdown + the adjacent, per-model Reasoning dropdown.
+export interface EndpointModel {
+  id: string;
+  reasoning_efforts: string[];
+  default_effort: string | null;
+}
+
 export interface LlmEndpointInput {
   name: string; provider: string; model: string;
   api_base: string; key_env_var: string | null;

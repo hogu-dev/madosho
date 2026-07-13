@@ -1,4 +1,4 @@
-import type { AlchemyGoal, AlchemyRun, AlchemyRunLaunch, AlchemyRunSummary, Artifacts, AuthMe, Comparison, Components, Corpus, CorpusMember, CreatedPipeline, Cube, DocPipeline, Document, EvalLaunch, EvalRun, ExtractDiff, ExtractDivergence, Job, LibraryDocument, LlmEndpoint, LlmEndpointInput, PipelineConfig, PipelineCreate, Proposal, QueryResult, RatingsConfig, RecommendedPipeline, ResearchLaunch, ResearchRun, UserRow, VirtualModel } from "./types";
+import type { AlchemyGoal, AlchemyGoalInput, AlchemyRun, AlchemyRunLaunch, AlchemyRunSummary, Artifacts, AuthMe, Comparison, Components, Corpus, CorpusMember, CreatedPipeline, Cube, DocPipeline, Document, EndpointModel, EvalLaunch, EvalRun, ExtractDiff, ExtractDivergence, Job, LibraryDocument, LlmEndpoint, LlmEndpointInput, PipelineConfig, PipelineCreate, Proposal, QueryResult, RatingsConfig, RecommendedPipeline, ResearchLaunch, ResearchRun, UserRow, VirtualModel } from "./types";
 
 export type ApiKeyRow = {
   name: string; prefix: string; scope: "read" | "write" | "admin";
@@ -95,6 +95,7 @@ export const api = {
   deleteVirtualModel: (id: number) => req<void>(`/virtual-models/${id}`, { method: "DELETE" }),
 
   listLlmEndpoints: () => req<LlmEndpoint[]>("/llm-endpoints"),
+  listEndpointModels: (id: number) => req<EndpointModel[]>(`/llm-endpoints/${id}/models`),
   createLlmEndpoint: (body: LlmEndpointInput) => req<LlmEndpoint>("/llm-endpoints", json(body)),
   updateLlmEndpoint: (id: number, body: LlmEndpointInput) =>
     req<LlmEndpoint>(`/llm-endpoints/${id}`, { ...json(body), method: "PUT" }),
@@ -148,8 +149,10 @@ export const api = {
   dismissProposal: (proposalId: number) =>
     req<{ status: string }>(`/proposals/${proposalId}/dismiss`, { method: "POST" }),
 
-  // Alchemy: goals are created via the CLI; the UI is a viewer with light actions.
+  // Alchemy: goals are created from the CLI or the Alchemy page's New-goal form;
+  // the UI also runs and views them.
   listAlchemyGoals: () => req<AlchemyGoal[]>("/alchemy/goals"),
+  createAlchemyGoal: (body: AlchemyGoalInput) => req<AlchemyGoal>("/alchemy/goals", json(body)),
   getAlchemyGoal: (ref: number | string) => req<AlchemyGoal>(`/alchemy/goals/${ref}`),
   listAlchemyRuns: (ref: number | string) =>
     req<AlchemyRunSummary[]>(`/alchemy/goals/${ref}/runs`),

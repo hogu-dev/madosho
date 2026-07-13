@@ -31,12 +31,22 @@ const RUNS = [
     finished_at: "2026-07-06T11:00:00Z" },
 ];
 
+// Per-endpoint model lists for the launch form's Model dropdown; endpoint 1's
+// first model keeps the pinned id so the default-model assertions hold.
+const MODELS_BY_ENDPOINT: Record<number, any[]> = {
+  1: [{ id: "granite-4.1", reasoning_efforts: ["low", "medium", "high"], default_effort: "medium" },
+      { id: "granite-4.1-mini", reasoning_efforts: [], default_effort: null }],
+  2: [{ id: "qwen3-14b", reasoning_efforts: [], default_effort: null }],
+};
+
 beforeEach(() => {
   canWrite = true;
   vi.restoreAllMocks();
   vi.spyOn(api, "getAlchemyGoal").mockResolvedValue(GOAL as any);
   vi.spyOn(api, "listAlchemyRuns").mockResolvedValue(RUNS as any);
   vi.spyOn(api, "listLlmEndpoints").mockResolvedValue(ENDPOINTS as any);
+  vi.spyOn(api, "listEndpointModels")
+    .mockImplementation((id: number) => Promise.resolve((MODELS_BY_ENDPOINT[id] ?? []) as any));
 });
 
 function renderPage() {
@@ -81,12 +91,16 @@ test("coverage toggle defaults to the goal's coverage", async () => {
     expect(screen.getByRole("button", { name: "Full" })).toHaveAttribute("aria-pressed", "true"));
 });
 
-test("model select defaults to the default endpoint; launch sends the payload and navigates", async () => {
+test("Endpoint defaults to the default endpoint, Model to its pinned model; launch sends the payload and navigates", async () => {
   const launch = vi.spyOn(api, "launchAlchemyRun").mockResolvedValue(
     { id: 30, goal_id: 3, version: 4, status: "pending" } as any);
   renderPage();
   await screen.findByRole("option", { name: "granite-local" });
-  expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("granite-local");
+  expect((screen.getByLabelText("Endpoint") as HTMLSelectElement).value).toBe("granite-local");
+  // Model defaults to the endpoint's pinned model once the model list loads
+  // (poll: the default is applied a render after the options appear).
+  await waitFor(() =>
+    expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("granite-4.1"));
   fireEvent.change(screen.getByLabelText("Guidance"), { target: { value: "check the new PDFs" } });
   fireEvent.change(screen.getByLabelText("Max LLM calls"), { target: { value: "40" } });
   fireEvent.click(screen.getByRole("button", { name: "Run" }));
@@ -98,18 +112,34 @@ test("model select defaults to the default endpoint; launch sends the payload an
   expect(await screen.findByText("run detail stub")).toBeInTheDocument();
 });
 
-test("sends reasoning_effort when a preset is picked", async () => {
+test("sends reasoning_effort when a level from the model's ladder is picked", async () => {
   const launch = vi.spyOn(api, "launchAlchemyRun").mockResolvedValue(
     { id: 31, goal_id: 3, version: 5, status: "pending" } as any);
   renderPage();
-  await screen.findByRole("option", { name: "granite-local" });
-  await screen.findByLabelText(/reasoning effort/i);
+  // await a ladder option (not just the model option): the ladder is populated
+  // a render after the model default settles, so "low" appearing means it's ready.
+  await screen.findByRole("option", { name: "low" });
   fireEvent.change(screen.getByLabelText(/reasoning effort/i), { target: { value: "low" } });
   fireEvent.click(screen.getByRole("button", { name: "Run" }));
   await waitFor(() => {
     const body = launch.mock.calls.at(-1)?.[1] as any;
     expect(body.reasoning_effort).toBe("low");
   });
+});
+
+test("the Model dropdown fans out the endpoint's models; picking one sends it and gates reasoning", async () => {
+  const launch = vi.spyOn(api, "launchAlchemyRun").mockResolvedValue(
+    { id: 32, goal_id: 3, version: 6, status: "pending" } as any);
+  renderPage();
+  await screen.findByRole("option", { name: "granite-4.1" });
+  expect(screen.getByRole("option", { name: "granite-4.1-mini" })).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Model"), { target: { value: "granite-4.1-mini" } });
+  // granite-4.1-mini has an empty ladder -> Reasoning select disabled
+  expect(screen.getByLabelText(/reasoning effort/i)).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  await waitFor(() => expect(launch).toHaveBeenCalled());
+  const body = launch.mock.calls.at(-1)?.[1] as any;
+  expect(body.llm).toEqual({ provider: "openai", model: "granite-4.1-mini" });
 });
 
 test("cancel on a running run confirms then POSTs the DB id", async () => {

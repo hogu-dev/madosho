@@ -199,9 +199,12 @@ export function Settings() {
                 onChange={(e) => setForm({ ...form,
                   reasoning_effort: e.target.value === "" ? null : e.target.value })}
                 placeholder="default (unset)" />
+              {/* Suggestions only (the field is a free text input): the GPT-5
+                  codex family runs none..xhigh/max; older models used minimal. */}
               <datalist id="reasoning-effort-presets">
-                <option value="minimal" /><option value="low" />
+                <option value="none" /><option value="minimal" /><option value="low" />
                 <option value="medium" /><option value="high" />
+                <option value="xhigh" /><option value="max" />
               </datalist>
             </div>
           </div>

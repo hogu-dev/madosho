@@ -5,10 +5,73 @@ import dataclasses
 import os
 from typing import Callable
 
+import httpx
 from sqlalchemy import select
 
 from madosho_server import db
 from madosho_server.llm import complete, respond
+
+
+# Per-model reasoning-effort ladders. An OpenAI-compatible /v1/models list
+# reports NO capability metadata (codex-proxy passes the backend's bare list
+# through byte-for-byte), so the valid efforts for a given model come from this
+# small maintained map, verified against OpenAI's current model docs. Match is
+# by longest name-prefix; a model with an empty ladder exposes no effort control
+# beyond the endpoint default (e.g. a non-reasoning model, or codex-auto-review).
+_REASONING_LADDERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("codex-auto-review", ()),                                         # fixed-preset review model
+    ("gpt-5.6", ("none", "low", "medium", "high", "xhigh", "max")),
+    ("gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
+    ("gpt-5.4", ("none", "low", "medium", "high", "xhigh")),
+    ("gpt-5.3", ("none", "low", "medium", "high", "xhigh")),
+    ("gpt-5", ("none", "low", "medium", "high", "xhigh")),             # generic gpt-5.x fallback
+)
+_DEFAULT_EFFORT = "medium"
+
+
+def reasoning_ladder(model: str) -> tuple[list[str], str | None]:
+    """(valid efforts, default effort) for a model name, by longest-prefix match.
+    A matched-but-empty ladder (codex-auto-review) and an unmatched model both
+    return ([], None): no effort control beyond the endpoint default."""
+    name = (model or "").lower()
+    best: tuple[str, ...] | None = None
+    best_len = -1
+    for prefix, efforts in _REASONING_LADDERS:
+        if name.startswith(prefix) and len(prefix) > best_len:
+            best, best_len = efforts, len(prefix)
+    if not best:
+        return [], None
+    return list(best), _DEFAULT_EFFORT
+
+
+def endpoint_models(settings, row: "db.LlmEndpoint") -> list[dict]:
+    """List the models this endpoint's upstream serves (GET {api_base}/models,
+    bearer-authed with the endpoint's OWN key), each annotated with its reasoning
+    ladder + default from reasoning_ladder(). Falls back to the endpoint's pinned
+    model when the upstream list is unreachable or empty, so the caller always
+    gets at least one selectable model."""
+    creds = endpoint_creds(settings, row)
+    ids: list[str] = []
+    if creds.llm_api_base:
+        headers = {}
+        if creds.llm_api_key:
+            headers["Authorization"] = f"Bearer {creds.llm_api_key}"
+        url = creds.llm_api_base.rstrip("/") + "/models"
+        try:
+            resp = httpx.get(url, headers=headers, timeout=6.0)
+            resp.raise_for_status()
+            data = resp.json().get("data") or []
+            ids = [m["id"] for m in data
+                   if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]]
+        except (httpx.HTTPError, ValueError, KeyError):
+            ids = []
+    if not ids and row.model:
+        ids = [row.model]
+    out: list[dict] = []
+    for mid in ids:
+        efforts, default = reasoning_ladder(mid)
+        out.append({"id": mid, "reasoning_efforts": efforts, "default_effort": default})
+    return out
 
 
 def endpoint_creds(settings, row):

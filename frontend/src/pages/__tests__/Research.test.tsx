@@ -20,10 +20,22 @@ const RUNS = [
     config: { source: "rag", document_ids: [], budget_chars: 100000, max_rounds: 8, llm: {} } },
 ];
 
+// The launch form's Model dropdown is populated per endpoint from
+// listEndpointModels; each model carries its own reasoning ladder. Endpoint 1
+// (gemma4-local, the default) fans out into two models; the first keeps the
+// endpoint's pinned model id so the default-model assertions below still hold.
+const MODELS_BY_ENDPOINT: Record<number, any[]> = {
+  1: [{ id: "gemma-4-e4b", reasoning_efforts: ["none", "low", "medium", "high"], default_effort: "medium" },
+      { id: "gemma-4-27b", reasoning_efforts: [], default_effort: null }],
+  2: [{ id: "qwen3-14b", reasoning_efforts: [], default_effort: null }],
+};
+
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(api, "listCorpora").mockResolvedValue(CORPORA as any);
   vi.spyOn(api, "listLlmEndpoints").mockResolvedValue(ENDPOINTS as any);
+  vi.spyOn(api, "listEndpointModels")
+    .mockImplementation((id: number) => Promise.resolve((MODELS_BY_ENDPOINT[id] ?? []) as any));
   vi.spyOn(api, "listDocuments").mockResolvedValue(DOCS as any);
   vi.spyOn(api, "listResearch").mockResolvedValue(RUNS as any);
 });
@@ -72,18 +84,36 @@ test("launching sends the chosen endpoint's provider/model and the typed prompt"
   expect(body.reasoning_effort).toBeUndefined();
 });
 
-test("sends reasoning_effort when a preset is picked", async () => {
+test("sends reasoning_effort when a level from the model's ladder is picked", async () => {
   const launch = vi.spyOn(api, "launchResearch")
     .mockResolvedValue({ id: 8, corpus_id: 1 } as any);
   renderList();
-  await screen.findByRole("option", { name: "gemma4-local" });
-  await screen.findByLabelText(/reasoning effort/i);
+  // await a ladder option ("medium"): it appears a render after the model
+  // default settles, so this guarantees the reasoning select is populated.
+  await screen.findByRole("option", { name: "medium" });
   fireEvent.change(screen.getByLabelText("Research question"), { target: { value: "thrust?" } });
   fireEvent.change(screen.getByLabelText(/reasoning effort/i), { target: { value: "medium" } });
   fireEvent.click(screen.getByRole("button", { name: /Launch/ }));
   await waitFor(() => expect(launch).toHaveBeenCalled());
   const [, body] = launch.mock.calls.at(-1)!;
   expect((body as any).reasoning_effort).toBe("medium");
+});
+
+test("the Model dropdown fans out the endpoint's served models; picking one sends it", async () => {
+  const launch = vi.spyOn(api, "launchResearch")
+    .mockResolvedValue({ id: 9, corpus_id: 1 } as any);
+  renderList();
+  // both of endpoint 1's models are offered (not the endpoint name)
+  await screen.findByRole("option", { name: "gemma-4-e4b" });
+  expect(screen.getByRole("option", { name: "gemma-4-27b" })).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Research question"), { target: { value: "thrust?" } });
+  fireEvent.change(screen.getByLabelText("Model"), { target: { value: "gemma-4-27b" } });
+  fireEvent.click(screen.getByRole("button", { name: /Launch/ }));
+  await waitFor(() => expect(launch).toHaveBeenCalled());
+  const [, body] = launch.mock.calls.at(-1)!;
+  expect((body as any).llm).toEqual({ provider: "openai", model: "gemma-4-27b" });
+  // gemma-4-27b has an empty ladder -> the Reasoning select is disabled
+  expect(screen.getByLabelText(/reasoning effort/i)).toBeDisabled();
 });
 
 test("run history links carry the corpus id for the detail fetch", async () => {
