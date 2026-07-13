@@ -24,7 +24,7 @@ def test_crud_and_set_default(client, monkeypatch):
                                  "key_env_var", "is_default", "key_present",
                                  "supports_text", "supports_vision", "is_vision_default",
                                  "api_flavor", "context_window_tokens",
-                                 "source_chars_budget"}
+                                 "source_chars_budget", "reasoning_effort"}
     assert first["api_flavor"] == "chat"        # default when unspecified
 
     r2 = client.post("/llm-endpoints", json={"name": "qwen", "provider": "openai",
@@ -204,3 +204,38 @@ def test_context_metadata_rejects_non_positive(client):
     r2 = client.post("/llm-endpoints", json={"name": "bad2", "provider": "o",
         "model": "m", "api_base": "u", "context_window_tokens": -1})
     assert r2.status_code == 422
+
+
+def test_reasoning_effort_create_read_update_roundtrip(client):
+    r = client.post("/llm-endpoints", json={"name": "codex", "provider": "openai",
+        "model": "gpt-5.6-sol", "api_base": "http://h/v1", "reasoning_effort": "low"})
+    assert r.status_code == 201, r.text
+    row = r.json()
+    assert row["reasoning_effort"] == "low"
+    assert "reasoning_effort" in row.keys()
+
+    upd = client.put(f"/llm-endpoints/{row['id']}", json={"name": "codex",
+        "provider": "openai", "model": "gpt-5.6-sol", "api_base": "http://h/v1",
+        "reasoning_effort": "high"})
+    assert upd.status_code == 200, upd.text
+    assert upd.json()["reasoning_effort"] == "high"
+
+
+def test_reasoning_effort_blank_becomes_unset(client):
+    r = client.post("/llm-endpoints", json={"name": "e", "provider": "openai",
+        "model": "m", "api_base": "http://h/v1", "reasoning_effort": "   "})
+    assert r.status_code == 201, r.text
+    assert r.json()["reasoning_effort"] is None   # whitespace-only -> unset
+
+
+def test_reasoning_effort_omitted_is_none(client):
+    r = client.post("/llm-endpoints", json={"name": "e2", "provider": "openai",
+        "model": "m", "api_base": "http://h/v1"})
+    assert r.status_code == 201, r.text
+    assert r.json()["reasoning_effort"] is None
+
+
+def test_reasoning_effort_over_cap_rejected(client):
+    r = client.post("/llm-endpoints", json={"name": "e3", "provider": "openai",
+        "model": "m", "api_base": "http://h/v1", "reasoning_effort": "x" * 33})
+    assert r.status_code == 422

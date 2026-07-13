@@ -13,7 +13,7 @@ from typing import Annotated, Callable, Literal
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -302,6 +302,25 @@ class VirtualModelRead(BaseModel):
     template: str | None
 
 
+def _normalize_reasoning_effort(v: object) -> str | None:
+    """Opaque effort string: trim, treat empty/whitespace-only as unset (None),
+    reject anything over 32 chars (defensive - real values are short words).
+    No enum: any short model-native token is accepted."""
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        raise ValueError("reasoning_effort must be a string")
+    v = v.strip()
+    if not v:
+        return None
+    if len(v) > 32:
+        raise ValueError("reasoning_effort must be at most 32 characters")
+    return v
+
+
+ReasoningEffort = Annotated[str | None, BeforeValidator(_normalize_reasoning_effort)]
+
+
 class LlmEndpointCreate(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
     name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._@ -]*$")
@@ -318,6 +337,8 @@ class LlmEndpointCreate(BaseModel):
     # budgets at the edge; None means "unset -> the run config decides".
     context_window_tokens: int | None = Field(default=None, ge=1)
     source_chars_budget: int | None = Field(default=None, ge=1)
+    # Opaque model-native reasoning-effort default; None/blank = unset.
+    reasoning_effort: ReasoningEffort = None
 
     @model_validator(mode="after")
     def _at_least_one_capability(self):
@@ -342,6 +363,7 @@ class LlmEndpointRead(BaseModel):
     api_flavor: str
     context_window_tokens: int | None
     source_chars_budget: int | None
+    reasoning_effort: str | None
 
 
 SessionDep = Annotated[Session, Depends(db.get_session)]
@@ -2410,7 +2432,8 @@ def _endpoint_read(row: db.LlmEndpoint) -> LlmEndpointRead:
         supports_text=row.supports_text, supports_vision=row.supports_vision,
         is_vision_default=row.is_vision_default, api_flavor=row.api_flavor,
         context_window_tokens=row.context_window_tokens,
-        source_chars_budget=row.source_chars_budget)
+        source_chars_budget=row.source_chars_budget,
+        reasoning_effort=row.reasoning_effort)
 
 
 @app.post("/llm-endpoints", response_model=LlmEndpointRead, status_code=201)
@@ -2426,7 +2449,8 @@ def create_llm_endpoint(body: LlmEndpointCreate, session: SessionDep):
         is_vision_default=(body.supports_vision and not has_vision_default),
         api_flavor=body.api_flavor,
         context_window_tokens=body.context_window_tokens,
-        source_chars_budget=body.source_chars_budget)
+        source_chars_budget=body.source_chars_budget,
+        reasoning_effort=body.reasoning_effort)
     session.add(row)
     try:
         session.commit()
@@ -2454,6 +2478,7 @@ def update_llm_endpoint(endpoint_id: int, body: LlmEndpointCreate, session: Sess
     row.api_flavor = body.api_flavor
     row.context_window_tokens = body.context_window_tokens
     row.source_chars_budget = body.source_chars_budget
+    row.reasoning_effort = body.reasoning_effort
     if not body.supports_vision:
         row.is_vision_default = False
     if not body.supports_text:
