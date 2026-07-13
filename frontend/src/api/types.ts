@@ -282,6 +282,7 @@ export interface LlmEndpoint {
   supports_text: boolean; supports_vision: boolean; is_vision_default: boolean;
   api_flavor: ApiFlavor;
   context_window_tokens: number | null; source_chars_budget: number | null;
+  reasoning_effort: string | null;
 }
 export interface LlmEndpointInput {
   name: string; provider: string; model: string;
@@ -289,6 +290,7 @@ export interface LlmEndpointInput {
   supports_text: boolean; supports_vision: boolean;
   api_flavor: ApiFlavor;
   context_window_tokens: number | null; source_chars_budget: number | null;
+  reasoning_effort: string | null;
 }
 
 export type AuthMe = {
@@ -321,6 +323,17 @@ export interface AlchemyGoal {
   coverage: "search" | "full" | "exhaustive";
   include_generated: boolean;
   created_at: string | null;
+}
+// POST /alchemy/goals body. spec shape is goal-type specific: living-research
+// carries { goal }, report carries { template } (markdown headings) and an
+// optional { goal } preamble. The server compiles+validates it (400 on a bad spec).
+export interface AlchemyGoalInput {
+  name: string;
+  corpus_id: number;
+  goal_type: string;
+  spec: Record<string, unknown>;
+  coverage: "search" | "full" | "exhaustive";
+  include_generated?: boolean;
 }
 
 export interface AlchemyUsage {
@@ -395,10 +408,29 @@ export interface AlchemyCitation {
 }
 
 // Full run payload (single-run GET / launch / finalize responses).
+// One row of the research loop's activity trace. A `tool_call` is an agent/tool
+// the model invoked (search, get-doc, ...) with its args + result; an `llm` row
+// marks a model turn (whether it called tools, and how much text it produced -
+// the verbatim prose is not stored, only the final draft is). Alchemy tags each
+// entry with the report `section` it belongs to.
+export interface AlchemyLogEntry {
+  round?: number;
+  section?: string;
+  kind?: "llm" | "tool_call";
+  name?: string;                      // tool_call: the agent/tool name
+  args?: Record<string, unknown>;     // tool_call: its arguments (e.g. the query)
+  ok?: boolean;
+  error?: string | null;
+  chars?: number;                     // tool_call: result size fed to the model
+  note?: string | null;               // e.g. "truncated to fit context budget"
+  has_tool_calls?: boolean;           // llm turn: did it call tools this round
+  text_chars?: number;                // llm turn: chars of prose it produced
+  text?: string;                      // llm turn: bounded preview of that prose
+}
 export interface AlchemyRun extends AlchemyRunSummary {
   draft_markdown: string | null;
   citations: AlchemyCitation[] | null;
-  run_log: Record<string, unknown>[] | null;
+  run_log: AlchemyLogEntry[] | null;
   sections: AlchemySection[] | null;
   ledger: AlchemyLedger | null;
   artifact_counts: Record<string, number> | null;

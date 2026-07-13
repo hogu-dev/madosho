@@ -8,7 +8,7 @@ import { useAuth } from "../auth/AuthContext";
 
 const EMPTY: LlmEndpointInput = { name: "", provider: "openai", model: "", api_base: "",
   key_env_var: null, supports_text: true, supports_vision: false, api_flavor: "chat",
-  context_window_tokens: null, source_chars_budget: null };
+  context_window_tokens: null, source_chars_budget: null, reasoning_effort: null };
 
 export function Settings() {
   const { canWrite } = useAuth();
@@ -191,6 +191,18 @@ export function Settings() {
               <input id="ep-source-budget" type="number" min={1} style={inputStyle}
                 value={form.source_chars_budget ?? ""} onChange={setNum("source_chars_budget")}
                 placeholder="e.g. 16000 (optional)" />
+            </div>
+            <div style={fieldStyle}>
+              <label htmlFor="ep-reasoning-effort">Reasoning effort</label>
+              <input id="ep-reasoning-effort" list="reasoning-effort-presets" style={inputStyle}
+                value={form.reasoning_effort ?? ""}
+                onChange={(e) => setForm({ ...form,
+                  reasoning_effort: e.target.value === "" ? null : e.target.value })}
+                placeholder="default (unset)" />
+              <datalist id="reasoning-effort-presets">
+                <option value="minimal" /><option value="low" />
+                <option value="medium" /><option value="high" />
+              </datalist>
             </div>
           </div>
           <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: "var(--ink-muted)" }}>
