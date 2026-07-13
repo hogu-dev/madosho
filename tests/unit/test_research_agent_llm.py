@@ -103,3 +103,22 @@ def test_anyllm_usage_absent_is_none(monkeypatch):
     client = AnyLlmClient(LlmEndpoint(provider="openai", model="m"))
     turn = client.complete([{"role": "user", "content": "x"}], [])
     assert turn.usage is None
+
+
+def test_forwards_reasoning_effort_when_set(monkeypatch):
+    captured = {}
+    msg = SimpleNamespace(content="ok", tool_calls=None)
+    monkeypatch.setattr(llm_mod, "completion", _fake_completion_factory(captured, msg))
+    client = AnyLlmClient(LlmEndpoint(provider="openai", model="m",
+                                      reasoning_effort="low"))
+    client.complete([{"role": "user", "content": "x"}], [])
+    assert captured["reasoning_effort"] == "low"
+
+
+def test_omits_reasoning_effort_when_unset(monkeypatch):
+    captured = {}
+    msg = SimpleNamespace(content="ok", tool_calls=None)
+    monkeypatch.setattr(llm_mod, "completion", _fake_completion_factory(captured, msg))
+    client = AnyLlmClient(LlmEndpoint(provider="openai", model="m"))  # no effort
+    client.complete([{"role": "user", "content": "x"}], [])
+    assert "reasoning_effort" not in captured   # left to any_llm's default

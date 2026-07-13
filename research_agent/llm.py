@@ -38,6 +38,10 @@ class AnyLlmClient:
             creds["api_key"] = self.endpoint.api_key
         if self.endpoint.api_base:
             creds["api_base"] = self.endpoint.api_base
+        # Only forward reasoning_effort when the endpoint sets it; leaving it out
+        # lets any_llm apply its own default (which drops the field for OpenAI).
+        if self.endpoint.reasoning_effort:
+            creds["reasoning_effort"] = self.endpoint.reasoning_effort
         resp = completion(
             model=self.endpoint.model,
             provider=self.endpoint.provider,
