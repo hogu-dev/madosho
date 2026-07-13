@@ -63,3 +63,12 @@ summary:focus-visible {
   outline: 2px solid var(--gilt-bright);
   outline-offset: 1px;
 }
+
+/* live-run pulse - the "LIVE" dot on a streaming activity console */
+@keyframes alchemy-live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; }
+}

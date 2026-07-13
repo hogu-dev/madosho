@@ -5,26 +5,33 @@ import { useAuth } from "../auth/AuthContext";
 import { useRunningJobsCount } from "../hooks/useRunningJobsCount";
 
 export function NavItem(
-  { to, label, active, badge }:
-  { to: string; label: string; active: boolean; badge?: number },
+  { to, label, subtitle, active, badge }:
+  { to: string; label: string; subtitle?: string; active: boolean; badge?: number },
 ) {
   return (
     <Link to={to} data-active={active ? "true" : "false"} style={{
       display: "flex", alignItems: "center", justifyContent: "space-between",
-      padding: "6px 10px", borderRadius: 6, textDecoration: "none",
+      padding: "7px 10px", borderRadius: 6, textDecoration: "none",
       fontFamily: "var(--font-ui)", fontSize: 14,
       color: active ? "var(--parchment-text)" : "var(--nav-inactive)",
       fontWeight: active ? 600 : 400,
       borderLeft: active ? "3px solid var(--gilt-bright)" : "3px solid transparent",
       background: active ? "rgba(200,162,74,0.1)" : "transparent",
     }}>
-      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        {active && <span aria-hidden style={{ width: 5, height: 5, borderRadius: 999,
-          background: "var(--gilt-bright)" }} />}
-        {label}
+      <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {active && <span aria-hidden style={{ width: 5, height: 5, borderRadius: 999,
+            background: "var(--gilt-bright)" }} />}
+          {label}
+        </span>
+        {/* Plain-language descriptor under the thematic name, so newcomers know
+            what each surface is without having to open it. */}
+        {subtitle && <span style={{ fontFamily: "var(--font-ui)", fontSize: 10.5,
+          fontWeight: 400, lineHeight: 1.3, color: "var(--nav-label)", whiteSpace: "nowrap",
+          overflow: "hidden", textOverflow: "ellipsis" }}>{subtitle}</span>}
       </span>
       {badge != null && <span style={{ fontFamily: "var(--font-mono)", fontSize: 11,
-        color: "var(--nav-label)" }}>{badge}</span>}
+        color: "var(--nav-label)", flex: "0 0 auto" }}>{badge}</span>}
     </Link>
   );
 }
@@ -73,8 +80,9 @@ export function Sidebar() {
   const { pathname } = useLocation();
   const { scope } = useAuth();
   const running = useRunningJobsCount();   // live "N building" badge on Jobs
-  const item = (to: string, label: string, badge?: number) =>
-    <NavItem key={to} to={to} label={label} active={isActive(pathname, to)} badge={badge} />;
+  const item = (to: string, label: string, subtitle?: string, badge?: number) =>
+    <NavItem key={to} to={to} label={label} subtitle={subtitle}
+      active={isActive(pathname, to)} badge={badge} />;
   return (
     <aside style={{ width: 248, flex: "0 0 248px", background: "var(--leather)",
       borderRight: "1px solid #000", padding: "16px 8px", display: "flex",
@@ -82,19 +90,19 @@ export function Sidebar() {
       <div style={{ fontFamily: "var(--font-serif)", fontSize: 22, fontWeight: 600,
         color: "var(--gilt-bright)", padding: "0 10px 8px" }}>madosho</div>
       <GroupLabel>Library</GroupLabel>
-      {item("/documents", "Documents")}
-      {item("/corpora", "Corpora")}
-      {item("/jobs", "Jobs", running > 0 ? running : undefined)}
+      {item("/documents", "Documents", "Source files, indexed once")}
+      {item("/corpora", "Corpora", "Document collections")}
+      {item("/jobs", "Jobs", "Background builds", running > 0 ? running : undefined)}
       <GroupLabel>Measure &amp; use</GroupLabel>
-      {item("/scrying", "Scrying")}
-      {item("/compare", "Compare")}
-      {item("/quality", "Quality")}
-      {item("/research", "Research")}
-      {item("/alchemy", "Alchemy")}
+      {item("/scrying", "Scrying", "Query & cited answer")}
+      {item("/compare", "Compare", "Pipelines side by side")}
+      {item("/quality", "Quality", "Ratings scoreboard")}
+      {item("/research", "Research", "Agentic cited reports")}
+      {item("/alchemy", "Alchemy", "Autonomous multi-agent")}
       <div style={{ flex: 1 }} />
-      {item("/settings", "Settings")}
-      {scope === "admin" && item("/users", "Users")}
-      {item("/keys", "Keys")}
+      {item("/settings", "Settings", "Endpoints & config")}
+      {scope === "admin" && item("/users", "Users", "Accounts")}
+      {item("/keys", "Keys", "API keys")}
       <AccountFooter />
     </aside>
   );
@@ -135,7 +143,11 @@ export function Frame({ children, topbar }: { children: ReactNode; topbar?: Reac
           borderBottom: "1px solid #000", display: "flex", alignItems: "center",
           padding: "0 24px" }}>{topbar}</header>
         <div style={{ flex: 1, padding: 24 }}>
+          {/* Full-width frame, filled with parchment so no page background shows
+              through to the right of a narrower content panel. Each page caps its
+              own content maxWidth and left-aligns within this filled frame. */}
           <div style={{ position: "relative", borderRadius: 8,
+            background: "var(--parchment-panel)",
             border: "1px solid var(--frame-rule)",
             boxShadow: "0 12px 40px rgba(18,11,4,0.34), inset 0 0 0 4px #e6dabd, inset 0 0 0 5px rgba(156,121,32,0.45)" }}>
             {children}

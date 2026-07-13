@@ -56,7 +56,9 @@ test("registers the alchemy surfaces (goals list, goal detail, run viewer)", () 
 test("the sidebar links to Alchemy and the breadcrumb labels it", async () => {
   const router = createMemoryRouter(routes, { initialEntries: ["/alchemy"] });
   render(<RouterProvider router={router} />);
-  const link = await screen.findByRole("link", { name: "Alchemy" });
+  // The nav link's accessible name now carries the descriptor subtitle
+  // ("Alchemy Autonomous multi-agent"), so match on the label prefix.
+  const link = await screen.findByRole("link", { name: /^Alchemy/ });
   expect(link).toHaveAttribute("href", "/alchemy");
   // Breadcrumbs renders as the page's only <nav>; without the CRUMB entry it
   // would fall back to "Documents".

@@ -123,6 +123,40 @@ test("download button creates a blob url, removes its anchor, and revokes on the
   vi.unstubAllGlobals();
 });
 
+test("activity log lists the agents' tool calls with args and result, and counts them", async () => {
+  vi.spyOn(api, "getAlchemyRun").mockResolvedValue({ ...DONE_RUN, run_log: [
+    { round: 1, section: "overview", kind: "llm", has_tool_calls: true, text_chars: 40 },
+    { round: 1, section: "overview", kind: "tool_call", name: "search",
+      args: { corpus: "aerospace", query: "F-1 engines" }, ok: true, chars: 4200 },
+    { round: 2, section: "overview", kind: "tool_call", name: "get-doc",
+      args: { document_id: 9 }, ok: false, error: "not found", chars: 0 },
+  ] } as any);
+  renderPage();
+  expect(await screen.findByText(/2 tool calls/)).toBeInTheDocument();
+  expect(screen.getByText("search")).toBeInTheDocument();
+  expect(screen.getByText("F-1 engines")).toBeInTheDocument();       // arg summary (the query)
+  expect(screen.getByText("get-doc")).toBeInTheDocument();
+  expect(screen.getByText(/not found/)).toBeInTheDocument();         // failed call surfaces its error
+});
+
+test("activity log shows the model's prose (with an ellipsis when the preview was capped)", async () => {
+  vi.spyOn(api, "getAlchemyRun").mockResolvedValue({ ...DONE_RUN, run_log: [
+    // full text preserved (text_chars == text.length): no ellipsis
+    { round: 1, kind: "llm", has_tool_calls: false, text: "I have enough to write.", text_chars: 23 },
+    // capped preview (text_chars > text.length): trailing ellipsis
+    { round: 2, kind: "llm", has_tool_calls: false, text: "The corpus shows that", text_chars: 640 },
+  ] } as any);
+  renderPage();
+  expect(await screen.findByText("I have enough to write.")).toBeInTheDocument();
+  expect(screen.getByText(/^The corpus shows that…$/)).toBeInTheDocument();
+});
+
+test("no activity panel when the run has no log", async () => {
+  renderPage();   // DONE_RUN.run_log is []
+  expect(await screen.findByText("Overview")).toBeInTheDocument();
+  expect(screen.queryByText(/tool calls?/)).not.toBeInTheDocument();
+});
+
 test("a running run shows the working phase and no download", async () => {
   vi.spyOn(api, "getAlchemyRun").mockResolvedValue({ ...DONE_RUN, status: "running",
     is_final: false, stop_reason: null, finished_at: null, draft_markdown: null,
@@ -131,4 +165,36 @@ test("a running run shows the working phase and no download", async () => {
   renderPage();
   expect(await screen.findByText(/coverage pass/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /Download/ })).not.toBeInTheDocument();
+});
+
+test("surfaces the goal's prompt text on the run view", async () => {
+  vi.spyOn(api, "getAlchemyGoal").mockResolvedValue({ ...GOAL,
+    spec: { goal: "Summarize how photosynthesis stores energy, using only the corpus." } } as any);
+  renderPage();
+  expect(await screen.findByText(/how photosynthesis stores energy/)).toBeInTheDocument();
+});
+
+test("a running run streams a LIVE activity console with its tool calls", async () => {
+  vi.spyOn(api, "getAlchemyRun").mockResolvedValue({ ...DONE_RUN, status: "running",
+    is_final: false, stop_reason: null, finished_at: null, draft_markdown: null,
+    sections: [], citations: [], ledger: null, progress: { phase: "running" },
+    run_log: [
+      { round: 1, kind: "llm", has_tool_calls: true, text_chars: 12 },
+      { round: 1, kind: "tool_call", name: "search",
+        args: { query: "photosynthesis energy" }, ok: true, chars: 3100 },
+    ] } as any);
+  renderPage();
+  // the live marker shows while the run is active, and the streamed call renders
+  expect(await screen.findByText("live")).toBeInTheDocument();
+  expect(screen.getByText("search")).toBeInTheDocument();
+  expect(screen.getByText("photosynthesis energy")).toBeInTheDocument();
+});
+
+test("a resolved run's activity log shows no LIVE marker", async () => {
+  vi.spyOn(api, "getAlchemyRun").mockResolvedValue({ ...DONE_RUN, run_log: [
+    { round: 1, kind: "tool_call", name: "search", args: { query: "x" }, ok: true, chars: 10 },
+  ] } as any);
+  renderPage();
+  expect(await screen.findByText(/1 tool call/)).toBeInTheDocument();
+  expect(screen.queryByText("live")).not.toBeInTheDocument();
 });

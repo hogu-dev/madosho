@@ -1,29 +1,82 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
-import type { AlchemyGoal } from "../api/types";
-import { Panel, Heading, EmptyState } from "../design/primitives";
+import type { AlchemyGoal, Corpus } from "../api/types";
+import { Panel, Heading, Button, SegmentedToggle, EmptyState } from "../design/primitives";
+import { useAuth } from "../auth/AuthContext";
 
 const GRID = "2fr 1.1fr 0.7fr 0.9fr 1.1fr";
 const mono = (size = 11, color = "var(--ink-faint)") =>
   ({ fontFamily: "var(--font-mono)" as const, fontSize: size, color });
-const DASH = <span style={{ color: "var(--ink-faint)", fontFamily: "var(--font-mono)" }}>{"\u2014"}</span>;
+const DASH = <span style={{ color: "var(--ink-faint)", fontFamily: "var(--font-mono)" }}>{"—"}</span>;
+
+const fieldLabel = { ...mono(10, "var(--ink-muted)"), letterSpacing: "0.08em",
+  textTransform: "uppercase" as const, marginBottom: 5, display: "block" };
+const inputStyle = {
+  width: "100%", boxSizing: "border-box" as const, fontSize: 13.5,
+  fontFamily: "var(--font-ui)", padding: "8px 11px", border: "1px solid var(--frame-rule)",
+  borderRadius: 7, background: "var(--parchment-panel)", color: "var(--ink)",
+} as const;
 
 function fmtDate(iso: string | null): string | null {
   return iso ? new Date(iso).toLocaleDateString() : null;
 }
 
-// Goals are authored from the CLI (madosho alchemy create ...); this page is a
-// read-only index into them. Row links carry the numeric goal id, the name is
-// only a label.
+// Goals are authored either from this page's New-goal form or the CLI
+// (madosho alchemy create ...); both POST /alchemy/goals. The list below is a
+// read-only index - row links open a goal's detail page, where runs are launched.
 export function Alchemy() {
+  const { canWrite } = useAuth();
+  const nav = useNavigate();
   const [goals, setGoals] = useState<AlchemyGoal[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  // New-goal form state.
+  const [corpora, setCorpora] = useState<Corpus[]>([]);
+  const [name, setName] = useState("");
+  const [corpusId, setCorpusId] = useState<number | "">("");
+  const [goalType, setGoalType] = useState("living-research");
+  const [goalText, setGoalText] = useState("");
+  const [template, setTemplate] = useState("");
+  const [coverage, setCoverage] = useState("search");
+  const [creating, setCreating] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const loadGoals = () => {
     api.listAlchemyGoals().then(setGoals)
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load goals"));
-  }, []);
+  };
+  useEffect(loadGoals, []);
+  useEffect(() => {
+    if (!canWrite) return;
+    api.listCorpora().then(setCorpora).catch(() => setCorpora([]));
+  }, [canWrite]);
+  useEffect(() => {
+    if (corpusId === "" && corpora.length > 0) setCorpusId(corpora[0].id);
+  }, [corpora, corpusId]);
+
+  // report needs a template (markdown headings become sections); living-research
+  // needs the goal text. Mirror the server's compile rules so we do not POST a
+  // spec the API will 400.
+  const specReady = goalType === "report" ? template.trim() !== "" : goalText.trim() !== "";
+  const canCreate = canWrite && name.trim() !== "" && corpusId !== "" && specReady && !creating;
+
+  const create = async () => {
+    if (corpusId === "") return;
+    setCreating(true); setFormError(null);
+    const spec = goalType === "report"
+      ? { ...(goalText.trim() ? { goal: goalText.trim() } : {}), template: template.trim() }
+      : { goal: goalText.trim() };
+    try {
+      const g = await api.createAlchemyGoal({
+        name: name.trim(), corpus_id: corpusId, goal_type: goalType,
+        spec, coverage: coverage as AlchemyGoal["coverage"],
+      });
+      nav(`/alchemy/${g.id}`);   // straight to the goal's page to launch the first run
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : "Create failed");
+    } finally { setCreating(false); }
+  };
 
   return (
     <Panel style={{ padding: "28px 32px", maxWidth: 980 }}>
@@ -37,13 +90,85 @@ export function Alchemy() {
         Named, versioned goals an agent pursues over a corpus. Each run produces a new draft
         version; finalize the one you trust.</p>
 
+      {/* NEW GOAL FORM (write scope only) */}
+      {canWrite && (
+        <div style={{ background: "var(--card)", border: "1px solid var(--frame-rule)", borderRadius: 12,
+          padding: 18, marginBottom: 26 }}>
+          <div style={{ ...mono(10, "var(--ink-muted)"), letterSpacing: "0.12em",
+            textTransform: "uppercase", marginBottom: 14 }}>New goal</div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14, marginBottom: 14 }}>
+            <div>
+              <label style={fieldLabel} htmlFor="goal-name">Name</label>
+              <input id="goal-name" aria-label="Name" value={name} placeholder="aero-flight-control-brief"
+                onChange={(e) => setName(e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <label style={fieldLabel} htmlFor="goal-corpus">Corpus</label>
+              <select id="goal-corpus" aria-label="Corpus" value={corpusId}
+                onChange={(e) => setCorpusId(e.target.value === "" ? "" : Number(e.target.value))}
+                style={inputStyle}>
+                {corpora.length === 0 && <option value="">no corpora</option>}
+                {corpora.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 14 }}>
+            <div>
+              <span style={fieldLabel}>Type</span>
+              <SegmentedToggle value={goalType} onChange={setGoalType}
+                options={[{ value: "living-research", label: "Living research" },
+                  { value: "report", label: "Report" }]} />
+            </div>
+            <div>
+              <span style={fieldLabel}>Coverage</span>
+              <SegmentedToggle value={coverage} onChange={setCoverage}
+                options={[{ value: "search", label: "Search" }, { value: "full", label: "Full" },
+                  { value: "exhaustive", label: "Exhaustive" }]} />
+            </div>
+          </div>
+
+          <div style={{ marginBottom: goalType === "report" ? 14 : 0 }}>
+            <label style={fieldLabel} htmlFor="goal-text">
+              {goalType === "report" ? "Preamble (optional)" : "Goal"}</label>
+            <textarea id="goal-text" aria-label="Goal" value={goalText}
+              onChange={(e) => setGoalText(e.target.value)}
+              placeholder={goalType === "report"
+                ? "Optional framing for the whole report"
+                : "What should the agent pursue over this corpus? (e.g. Summarize how photosynthesis stores energy, using only the corpus.)"}
+              style={{ ...inputStyle, minHeight: 62, resize: "vertical", lineHeight: 1.5 }} />
+          </div>
+
+          {goalType === "report" && (
+            <div>
+              <label style={fieldLabel} htmlFor="goal-template">Template (markdown headings become sections)</label>
+              <textarea id="goal-template" aria-label="Template" value={template}
+                onChange={(e) => setTemplate(e.target.value)}
+                placeholder={"## Flight control approach\n## Notable risks or failures\n## Program status"}
+                style={{ ...inputStyle, minHeight: 84, resize: "vertical", lineHeight: 1.5,
+                  fontFamily: "var(--font-mono)", fontSize: 12.5 }} />
+            </div>
+          )}
+
+          {formError && <p style={{ color: "var(--oxblood)", fontSize: 13, margin: "12px 0 0" }}>{formError}</p>}
+
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 15 }}>
+            <Button onClick={create} disabled={!canCreate}>
+              {creating ? "Creating..." : "Create goal"}</Button>
+          </div>
+        </div>
+      )}
+
       {error && <p style={{ color: "var(--oxblood)", fontSize: 13 }}>{error}</p>}
       {goals === null && !error &&
         <p style={{ color: "var(--ink-faint)", fontSize: 13 }}>Loading...</p>}
 
       {goals !== null && goals.length === 0 && !error && (
         <EmptyState title="No alchemy goals yet"
-          hint="Goals are created from the CLI: madosho alchemy create <name> --corpus <corpus>" />
+          hint={canWrite
+            ? "Create your first goal with the form above (or the CLI: madosho alchemy create <name> --corpus <corpus>)."
+            : "Goals are created from the CLI: madosho alchemy create <name> --corpus <corpus>"} />
       )}
 
       {goals !== null && goals.length > 0 && (

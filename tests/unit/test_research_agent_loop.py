@@ -4,7 +4,7 @@ real model. Asserts the loop calls tools, assembles citations, enforces the roun
 cap and the budget, and records a run log."""
 from __future__ import annotations
 
-from research_agent.loop import run_loop
+from research_agent.loop import _LLM_TEXT_PREVIEW, run_loop
 from research_agent.types import AssistantTurn, RunBudget, ToolCall, ToolResult, ToolSpec
 
 
@@ -72,6 +72,26 @@ def test_loop_calls_tool_then_writes_report():
     assert llm.tool_args_seen[0][0]["function"]["name"] == "search"
 
 
+def test_llm_entries_carry_model_text_preview():
+    # the live console reads each llm turn's `text` to show what the model wrote
+    # (not just text_chars). Interim prose is kept verbatim up to the preview cap;
+    # text_chars always reflects the full length.
+    long_prose = "z" * (_LLM_TEXT_PREVIEW + 250)
+    tools = FakeTools({"search": SEARCH_HIT})
+    llm = ScriptedLlm([
+        AssistantTurn(text="Let me look this up.", tool_calls=[
+            ToolCall(id="c1", name="search", arguments={"corpus": "a", "query": "q"})]),
+        AssistantTurn(text=long_prose, tool_calls=[]),
+    ])
+    report = run_loop("q", "agent", tools, llm, RunBudget())
+    llm_entries = [e for e in report.run_log if e["kind"] == "llm"]
+    # short interim prose is preserved whole
+    assert llm_entries[0]["text"] == "Let me look this up."
+    # long final prose is truncated to the preview cap, but text_chars is the full length
+    assert llm_entries[1]["text"] == "z" * _LLM_TEXT_PREVIEW
+    assert llm_entries[1]["text_chars"] == _LLM_TEXT_PREVIEW + 250
+
+
 def test_round_cap_forces_synthesis():
     tools = FakeTools({"search": SEARCH_HIT})
     # every turn keeps calling the tool; never emits a final on its own
@@ -87,6 +107,8 @@ def test_round_cap_forces_synthesis():
     report = run_loop("q", "agent", tools, llm, RunBudget(max_rounds=2))
     assert report.stop_reason == "round_cap"
     assert report.markdown == "# Forced report"
+    # the forced-synthesis llm entry also carries its prose for the live console
+    assert [e for e in report.run_log if e["kind"] == "llm"][-1]["text"] == "# Forced report"
     # 2 rounds of tool calls, then a tool-less synthesis call (empty tools list)
     assert llm.tool_args_seen[-1] == []
 
@@ -209,3 +231,46 @@ def test_dedupe_collapses_same_document_same_quote_across_tools():
     anon = Citation(document_id=None, pipeline_id=None, pipeline=None, position=None,
                     citation="", source=None, score=None, quote=QUOTE)
     assert len(_dedupe([anon, anon])) == 2
+
+
+def test_on_event_streams_each_entry_live_and_in_order():
+    """The live-console seam: on_event fires once per run_log entry, in the same
+    order, and the streamed entries equal the final run_log - so a poll-driven
+    console can show tool calls as they happen without waiting for the run."""
+    tools = FakeTools({"search": SEARCH_HIT})
+    llm = ScriptedLlm([
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="c1", name="search",
+                     arguments={"corpus": "aerospace", "query": "sensor failure"})]),
+        AssistantTurn(text="# Report\ndone.", tool_calls=[]),
+    ])
+    streamed: list[dict] = []
+    report = run_loop("q", "You are a researcher.", tools, llm, RunBudget(),
+                      on_event=streamed.append)
+    # every entry was emitted live, in order, and matches the final log exactly
+    assert streamed == report.run_log
+    assert [e["kind"] for e in streamed] == ["llm", "tool_call", "llm"]
+    # the tool_call was emitted with its real result (ok + a query arg), i.e. as
+    # it happened, not a placeholder
+    tc = streamed[1]
+    assert tc["name"] == "search" and tc["ok"] is True
+    assert tc["args"]["query"] == "sensor failure"
+
+
+def test_on_event_sink_that_raises_never_breaks_the_run():
+    """The console sink is best-effort: a flaky sink (a DB hiccup mid-run) must
+    not crash the loop - the run still completes and returns its full log."""
+    tools = FakeTools({"search": SEARCH_HIT})
+    llm = ScriptedLlm([
+        AssistantTurn(text=None, tool_calls=[
+            ToolCall(id="c1", name="search",
+                     arguments={"corpus": "aerospace", "query": "q"})]),
+        AssistantTurn(text="# Report\ndone.", tool_calls=[]),
+    ])
+
+    def boom(_entry):
+        raise RuntimeError("sink is down")
+
+    report = run_loop("q", "md", tools, llm, RunBudget(), on_event=boom)
+    assert report.stop_reason == "final"
+    assert [e["kind"] for e in report.run_log] == ["llm", "tool_call", "llm"]

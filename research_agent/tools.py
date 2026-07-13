@@ -67,6 +67,20 @@ class CliToolProvider:
 
     def invoke(self, name: str, args: dict) -> ToolResult:
         recipe = self._invocations.get(name)
+        if recipe is None and not self._invocations:
+            # invoke() before manifest(): load the recipe table on first use so a
+            # DIRECT invoke works instead of silently failing. The orchestrator's
+            # mechanical corpus-size lookup (list_corpus_docs -> "list-documents")
+            # runs before any unit's loop has called manifest(); without this it
+            # got "unknown tool" and the coverage ledger reported "size unknown".
+            # Guarded on an EMPTY table so a genuinely unknown name (table already
+            # loaded) still fails fast without re-shelling. Best-effort: a failing
+            # manifest load surfaces as a structured error, never an exception.
+            try:
+                self.manifest()
+            except Exception as e:
+                return ToolResult(ok=False, error=f"tool manifest load failed: {e}")
+            recipe = self._invocations.get(name)
         if recipe is None:
             return ToolResult(ok=False, error=f"unknown tool: {name!r}")
         try:

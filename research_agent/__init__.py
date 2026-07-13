@@ -31,12 +31,16 @@ __all__ = [
 
 def run(prompt: str, *, tools: ToolProvider, llm: LlmClient,
         autonomous_md: str | None = None, budget: RunBudget | None = None,
-        should_cancel: Callable[[], bool] | None = None) -> Report:
+        should_cancel: Callable[[], bool] | None = None,
+        on_event: Callable[[dict], None] | None = None) -> Report:
     """Run a research agent: gather evidence with the tools, write a cited report.
 
     autonomous_md defaults to the shipped instructions; budget defaults to RunBudget().
     should_cancel is an optional callback polled at the start of each round; when it
-    returns True the loop exits immediately with stop_reason='cancelled'."""
+    returns True the loop exits immediately with stop_reason='cancelled'.
+    on_event, when given, is called with each run_log entry as it is produced -
+    the streaming seam for a live activity console (best-effort; see run_loop)."""
     md = autonomous_md if autonomous_md is not None else load_default_autonomous_md()
     b = budget if budget is not None else RunBudget()
-    return run_loop(prompt, md, tools, llm, b, should_cancel=should_cancel)
+    return run_loop(prompt, md, tools, llm, b, should_cancel=should_cancel,
+                    on_event=on_event)

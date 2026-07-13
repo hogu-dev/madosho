@@ -296,7 +296,7 @@ def _remaining_text(ledger) -> str:
 
 def _run_unit_with_handoffs(prompt, *, tools, llm, budget, autonomous_md,
                             should_cancel, unit_key, ledger, max_handoffs,
-                            compose_continuation):
+                            compose_continuation, on_event=None):
     """Run ONE bounded work unit, then keep it going across HANDOFFS when it
     runs out of round budget WITHOUT finishing.
 
@@ -325,7 +325,7 @@ def _run_unit_with_handoffs(prompt, *, tools, llm, budget, autonomous_md,
     ledger here, so the caller must not mark them again."""
     report = research_agent.run(prompt, tools=tools, llm=llm, budget=budget,
                                 autonomous_md=autonomous_md,
-                                should_cancel=should_cancel)
+                                should_cancel=should_cancel, on_event=on_event)
     ledger.mark_citations(report.citations, "search")
     cits = list(report.citations)
     run_log = list(report.run_log)
@@ -372,7 +372,8 @@ def _run_unit_with_handoffs(prompt, *, tools, llm, budget, autonomous_md,
             cont = research_agent.run(
                 compose_continuation(markdown, docs_covered, remaining),
                 tools=tools, llm=llm, budget=cont_budget,
-                autonomous_md=autonomous_md, should_cancel=should_cancel)
+                autonomous_md=autonomous_md, should_cancel=should_cancel,
+                on_event=on_event)
         except CallCapExceeded:
             # the backstop tripped INSIDE the continuation: earlier units'
             # markdown + citations already live on the accumulators, so keep
@@ -400,7 +401,12 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
              max_llm_calls: int | None = None,
              max_handoffs: int = _MAX_HANDOFFS,
              concurrency: int = 1,
-             should_cancel=None, on_progress=None) -> GoalRunResult:
+             should_cancel=None, on_progress=None, on_event=None) -> GoalRunResult:
+    # on_event streams each unit's run_log entries live as they happen (for a
+    # activity console); on_progress carries coarse phase/section markers. Both
+    # optional and best-effort. Section-based paths stamp each live entry with
+    # its section key here (mirroring the final run_log's per-section tagging);
+    # living-research's single "body" unit emits unstamped, as its final log is.
     compiled = compile_spec(goal_type, spec)
     if coverage not in COVERAGE_MODES:
         raise ValueError(
@@ -427,7 +433,7 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
                            max_handoffs=max_handoffs,
                            concurrency=concurrency,
                            should_cancel=should_cancel,
-                           on_progress=on_progress)
+                           on_progress=on_progress, on_event=on_event)
     # living-research: the stage-A single-unit path, deepened by coverage
     digests_text = None
     extra_citations: list = []
@@ -464,7 +470,8 @@ def run_goal(goal_type: str, spec: dict, *, corpus: str, tools, llm,
     report, handoffs = _run_unit_with_handoffs(
         prompt, tools=tools, llm=counting, budget=budget, autonomous_md=None,
         should_cancel=should_cancel, unit_key="body", ledger=ledger,
-        max_handoffs=max_handoffs, compose_continuation=_body_continuation)
+        max_handoffs=max_handoffs, compose_continuation=_body_continuation,
+        on_event=on_event)
     artifacts.extend(handoffs)
     markdown, stop, citations = (report.markdown, report.stop_reason,
                                  extra_citations + list(report.citations))
@@ -598,7 +605,7 @@ def _run_sections_parallel(compiled, results, *, corpus, tools, counting,
                            budget, ledger, guidance, prior_by_key, report_md,
                            digests_text, max_llm_calls, max_handoffs,
                            should_cancel, on_progress, concurrency,
-                           citations, own_cits, run_log, artifacts):
+                           citations, own_cits, run_log, artifacts, on_event=None):
     """The concurrency>1 section phase: every section unit runs on a thread
     pool instead of the sequential loop. Mirrors the sequential loop's
     semantics with three deliberate differences:
@@ -684,7 +691,8 @@ def _run_sections_parallel(compiled, results, *, corpus, tools, counting,
             prompt, tools=tools, llm=unit_llm, budget=unit_budget,
             autonomous_md=report_md, should_cancel=should_cancel,
             unit_key=section.key, ledger=ledger, max_handoffs=max_handoffs,
-            compose_continuation=_continuation)
+            compose_continuation=_continuation,
+            on_event=_stamp_events(on_event, section.key))
         return unit, unit_handoffs, unit_llm.unit_calls
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
@@ -758,9 +766,19 @@ def _run_sections_parallel(compiled, results, *, corpus, tools, counting,
     return halted, round_cap_empty
 
 
+def _stamp_events(on_event, section_key):
+    """Wrap a live-event sink so every entry a section's unit emits is tagged
+    with its section key - the same stamping the assembly loop applies to the
+    final run_log, so the live console groups entries by section too. Returns
+    None when there is no sink (keeps the call sites branch-free)."""
+    if on_event is None:
+        return None
+    return lambda entry: on_event({"section": section_key, **entry})
+
+
 def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
                 ledger, guidance, prior_sections, max_llm_calls, max_handoffs,
-                concurrency=1, should_cancel, on_progress):
+                concurrency=1, should_cancel, on_progress, on_event=None):
     # keep the FULL prior dicts (content + confidence), not just content: a
     # section that ends unfilled carries the prior's content and confidence
     prior_by_key = {p.get("key"): p for p in prior_sections}
@@ -806,7 +824,7 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
             max_handoffs=max_handoffs, should_cancel=should_cancel,
             on_progress=on_progress, concurrency=concurrency,
             citations=citations, own_cits=own_cits, run_log=run_log,
-            artifacts=artifacts)
+            artifacts=artifacts, on_event=on_event)
     else:
         for i, (section, res) in enumerate(zip(compiled.sections, results)):
             if halted is None and should_cancel is not None and should_cancel():
@@ -856,7 +874,8 @@ def _run_report(compiled, *, corpus, tools, counting, budget, coverage,
                     prompt, tools=tools, llm=counting, budget=unit_budget,
                     autonomous_md=report_md, should_cancel=should_cancel,
                     unit_key=section.key, ledger=ledger, max_handoffs=max_handoffs,
-                    compose_continuation=_section_continuation)
+                    compose_continuation=_section_continuation,
+                    on_event=_stamp_events(on_event, section.key))
             except CallCapExceeded:
                 # backstop tripped mid-unit: the unit's partial context dies but
                 # every previously landed section survives - the whole point of

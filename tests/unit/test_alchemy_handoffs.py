@@ -32,7 +32,7 @@ class FakeRun:
         self.prompts = []
 
     def __call__(self, prompt, *, tools, llm, budget=None, autonomous_md=None,
-                 should_cancel=None):
+                 should_cancel=None, on_event=None):
         self.prompts.append(prompt)
         for _ in range(self.cost):
             llm.usage.llm_calls += 1
