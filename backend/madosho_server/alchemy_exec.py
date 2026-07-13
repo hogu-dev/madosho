@@ -8,6 +8,7 @@ nothing from here.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import asdict, is_dataclass
 
 from madosho_server import db
@@ -42,13 +43,41 @@ def _make_progress_writer(alchemy_run_id):
     return on_progress
 
 
+def _make_event_sink(alchemy_run_id):
+    """Stream each run_log entry onto the run row the moment the engine produces
+    it, so the web view's existing poll surfaces a LIVE activity console instead
+    of waiting for the whole run to resolve. Own short session per event (same
+    pattern as the progress/cancel closures) so the adapter's main session is
+    never committed mid-run; a lock serializes the read-modify-write of the JSON
+    run_log column across the concurrent section threads (report goals run units
+    on a pool). Guarded on status so a late event cannot revive a terminal row.
+    Fully best-effort: execute_alchemy_run overwrites run_log with the final,
+    section-ordered result when the run resolves, so any interim glitch (an
+    out-of-order or dropped snapshot) self-heals - the stream is the live view,
+    the end-of-run write is authoritative."""
+    lock = threading.Lock()
+    buf: list[dict] = []
+
+    def on_event(entry: dict):
+        with lock:
+            buf.append(dict(entry))
+            snapshot = list(buf)
+            with db.SessionLocal() as s:
+                r = s.get(db.AlchemyRun, alchemy_run_id)
+                if r is not None and r.status == "running":
+                    r.run_log = snapshot
+                    s.commit()
+    return on_event
+
+
 def _default_run_goal(goal_type, spec, *, corpus, settings, guidance,
                       prior_draft, provider, model, budget_chars, max_rounds,
                       max_llm_calls, alchemy_run_id, coverage="search",
                       include_generated: bool = False,
                       concurrency: int = 1,
                       prior_sections=None, prior_ledger=None,
-                      on_progress=None, tools=None, llm=None,
+                      reasoning_effort=None,
+                      on_progress=None, on_event=None, tools=None, llm=None,
                       should_cancel=None):
     """Real path: build the CLI tool provider + any_llm client from madosho's
     creds and run the alchemy engine. Lazily imported so unit tests that inject
@@ -67,7 +96,8 @@ def _default_run_goal(goal_type, spec, *, corpus, settings, guidance,
     import alchemy
     endpoint = research_agent.LlmEndpoint(
         provider=provider, model=model,
-        api_key=settings.llm_api_key, api_base=settings.llm_api_base)
+        api_key=settings.llm_api_key, api_base=settings.llm_api_base,
+        reasoning_effort=reasoning_effort)
     # Per-RUN exclusion seam: bake --exclude-generated into THIS provider's base
     # argv (not a process env var) so a goal's units never retrieve their own
     # prior drafts, and so a concurrent research run in the same process is
@@ -88,7 +118,7 @@ def _default_run_goal(goal_type, spec, *, corpus, settings, guidance,
                             max_llm_calls=max_llm_calls,
                             concurrency=concurrency,
                             should_cancel=_make_cancel_check(alchemy_run_id),
-                            on_progress=on_progress)
+                            on_progress=on_progress, on_event=on_event)
 
 
 def _prior_draft_for(session, goal_id, based_on_version):
@@ -208,7 +238,9 @@ def execute_alchemy_run(session, alchemy_run_id: int, settings,
                         prior_draft=prior_draft,
                         prior_sections=prior_sections,
                         prior_ledger=prior_ledger,
+                        reasoning_effort=llm_cfg.get("reasoning_effort"),
                         on_progress=_make_progress_writer(alchemy_run_id),
+                        on_event=_make_event_sink(alchemy_run_id),
                         should_cancel=_make_cancel_check(alchemy_run_id))
         run.draft_markdown = result.markdown
         run.citations = [asdict(c) if is_dataclass(c) else vars(c)

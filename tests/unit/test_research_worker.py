@@ -84,7 +84,7 @@ def test_execute_research_writes_report_and_marks_done(tmp_path, monkeypatch):
     captured = {}
 
     def fake_run_agent(prompt, settings, provider, model, *, budget_chars, max_rounds,
-                       research_run_id):
+                       research_run_id, reasoning_effort=None):
         captured["prompt"] = prompt
         captured["provider"] = provider
         captured["model"] = model
@@ -153,7 +153,7 @@ def test_execute_research_honours_cancel_set_during_run(tmp_path):
     rid = _make_run(SessionLocal, cid)
 
     def cancelling_run_agent(prompt, settings, provider, model, *, budget_chars, max_rounds,
-                             research_run_id):
+                             research_run_id, reasoning_effort=None):
         # simulate an external cancel arriving while the agent is working
         with SessionLocal() as s2:
             row = s2.get(db.ResearchRun, rid)
@@ -185,3 +185,22 @@ def test_worker_consumes_research_queue(monkeypatch):
     from madosho_server.entrypoints import worker_queues
     monkeypatch.delenv("MADOSHO_WORKER_QUEUES", raising=False)
     assert "research" in worker_queues()
+
+
+def test_default_run_agent_builds_endpoint_with_reasoning_effort(monkeypatch):
+    import research_agent
+    from madosho_server import research
+    from madosho_server.settings import Settings
+    captured = {}
+    monkeypatch.setattr(research_agent, "LlmEndpoint",
+                        lambda **kw: captured.update(kw))
+    monkeypatch.setattr(research_agent, "CliToolProvider", lambda argv: None)
+    monkeypatch.setattr(research_agent, "AnyLlmClient", lambda ep: None)
+    monkeypatch.setattr(research_agent, "RunBudget", lambda **kw: None)
+    monkeypatch.setattr(research_agent, "run",
+                        lambda *a, **k: __import__("types").SimpleNamespace())
+    research._default_run_agent(
+        "prompt", Settings.from_env(), "openai", "m",
+        budget_chars=1000, max_rounds=2, research_run_id=1,
+        reasoning_effort="high")
+    assert captured["reasoning_effort"] == "high"

@@ -22,7 +22,7 @@ from madosho.core.config import MadoshoConfig
 from madosho.core.errors import MadoshoError
 from madosho.core.meta import ComponentKind
 from madosho.core.registry import Registry
-from madosho_server import cube as cube_mod, db, extraction, membership, pipelines, tasks, textdiff
+from madosho_server import cube as cube_mod, db, extraction, llm_endpoints, membership, pipelines, tasks, textdiff
 from madosho_server import auth as auth_mod
 from madosho_server.auth import make_auth_dependency
 from madosho_server.components import list_components
@@ -416,6 +416,7 @@ class ResearchLaunch(BaseModel):
     budget_chars: int = 100_000
     max_rounds: int = 8
     llm: dict = Field(default_factory=dict)   # {"provider","model"}
+    reasoning_effort: ReasoningEffort = None  # per-job override; None -> endpoint default
 
 
 class StatusResponse(BaseModel):
@@ -684,6 +685,7 @@ class AlchemyRunLaunch(BaseModel):
     max_rounds: int = 8
     max_llm_calls: int | None = Field(default=None, ge=1)  # optional self-cap for rate-limited upstreams
     concurrency: int = Field(default=1, ge=1, le=8)         # parallel work units per run (stage E); 1 = today's serial path
+    reasoning_effort: ReasoningEffort = None  # per-job override; None -> endpoint default
 
 
 class AlchemyFinalize(BaseModel):
@@ -2070,11 +2072,17 @@ def launch_research(corpus_id: int, body: ResearchLaunch, session: SessionDep,
         raise HTTPException(status_code=404, detail="corpus not found")
     if not body.llm.get("provider") or not body.llm.get("model"):
         raise HTTPException(status_code=400, detail="llm provider and model are required")
+    llm_cfg = dict(body.llm)
+    effort = (body.reasoning_effort if body.reasoning_effort is not None
+              else llm_endpoints.endpoint_reasoning_effort(
+                  session, body.llm["provider"], body.llm["model"]))
+    if effort is not None:
+        llm_cfg["reasoning_effort"] = effort
     run = db.ResearchRun(
         corpus_id=corpus_id, status="pending", prompt=body.prompt,
         config={"source": body.source, "document_ids": body.document_ids,
                 "budget_chars": body.budget_chars, "max_rounds": body.max_rounds,
-                "llm": body.llm},
+                "llm": llm_cfg},
         progress={"phase": "pending"})
     session.add(run)
     session.flush()
@@ -2201,6 +2209,11 @@ def start_alchemy_run(ref: str, body: AlchemyRunLaunch, session: SessionDep,
         # Only a fully-absent llm block (both keys missing) means "use default".
         raise HTTPException(status_code=400,
                             detail="llm provider and model are required")
+    effort = (body.reasoning_effort if body.reasoning_effort is not None
+              else llm_endpoints.endpoint_reasoning_effort(
+                  session, llm_cfg["provider"], llm_cfg["model"]))
+    if effort is not None:
+        llm_cfg["reasoning_effort"] = effort
     last = session.scalars(select(db.AlchemyRun)
                            .where(db.AlchemyRun.goal_id == g.id)
                            .order_by(db.AlchemyRun.version.desc())).first()

@@ -68,6 +68,21 @@ def endpoint_budget(session, provider: str, model: str) -> tuple[int | None, int
     return (row.source_chars_budget, row.context_window_tokens)
 
 
+def endpoint_reasoning_effort(session, provider: str, model: str) -> str | None:
+    """The reasoning_effort default of the registry row matching (provider,
+    model), or None if no row / no value. Same row selection as endpoint_budget
+    (default row wins, then lowest id), so the effort tracks the endpoint a run
+    would resolve to. Used to freeze the endpoint default into a run's stored
+    config at launch when the launch sends no per-job override."""
+    row = session.scalars(
+        select(db.LlmEndpoint)
+        .where(db.LlmEndpoint.provider == provider,
+               db.LlmEndpoint.model == model)
+        .order_by(db.LlmEndpoint.is_default.desc(), db.LlmEndpoint.id)
+    ).first()
+    return row.reasoning_effort if row is not None else None
+
+
 def resolve_vision_endpoint(session, settings):
     """Return (provider, model, bound_settings, api_flavor) for the default VISION
     endpoint, or None when no vision-capable default exists. bound_settings carries

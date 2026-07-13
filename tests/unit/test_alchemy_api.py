@@ -763,3 +763,32 @@ def test_finalize_ingest_after_standalone_ingest_is_idempotent(tmp_path, monkeyp
             db.AlchemyArtifact.kind == "ingest").all()
         assert len(arts) == 1
         assert arts[0].document_id == standalone.json()["id"]
+
+
+def test_alchemy_launch_reasoning_effort_precedence(tmp_path):
+    db.configure_engine(f"sqlite:///{tmp_path/'al.db'}"); db.create_all()
+    client = TestClient(api.app)
+    with db.SessionLocal() as s:
+        c = db.Corpus(name="c"); s.add(c); s.flush()
+        s.add(db.LlmEndpoint(name="codex", provider="openai", model="m",
+                             api_base="u", is_default=True, reasoning_effort="low"))
+        g = db.AlchemyGoal(name="g", corpus_id=c.id, goal_type="living-research",
+                           spec={"goal": "x"}, coverage="search")
+        s.add(g); s.commit(); gid = g.id
+
+    # override wins
+    r = client.post(f"/alchemy/goals/{gid}/runs",
+                    json={"llm": {"provider": "openai", "model": "m"},
+                          "max_llm_calls": 3, "reasoning_effort": "high"})
+    assert r.status_code in (200, 201), r.text
+    with db.SessionLocal() as s:
+        run = s.query(db.AlchemyRun).order_by(db.AlchemyRun.version.desc()).first()
+        assert run.config["llm"]["reasoning_effort"] == "high"
+
+    # no override -> endpoint default is stamped
+    r2 = client.post(f"/alchemy/goals/{gid}/runs",
+                     json={"llm": {"provider": "openai", "model": "m"},
+                           "max_llm_calls": 3})
+    with db.SessionLocal() as s:
+        run = s.query(db.AlchemyRun).order_by(db.AlchemyRun.version.desc()).first()
+        assert run.config["llm"]["reasoning_effort"] == "low"

@@ -65,14 +65,16 @@ def _make_cancel_check(research_run_id):
 
 
 def _default_run_agent(prompt: str, settings, provider: str, model: str, *,
-                       budget_chars: int, max_rounds: int, research_run_id: int):
+                       budget_chars: int, max_rounds: int, research_run_id: int,
+                       reasoning_effort: str | None = None):
     """The real agent path: build the CLI tool provider + an any_llm-backed client
     from madosho's configured creds, and run the loop. Imported lazily so the unit
     tests (which inject a fake run_agent) never need research_agent or subprocesses."""
     import research_agent
     endpoint = research_agent.LlmEndpoint(
         provider=provider, model=model,
-        api_key=settings.llm_api_key, api_base=settings.llm_api_base)
+        api_key=settings.llm_api_key, api_base=settings.llm_api_base,
+        reasoning_effort=reasoning_effort)
     tools = research_agent.CliToolProvider(["python", "-m", "madosho_cli"])
     budget = research_agent.RunBudget(max_context_chars=budget_chars, max_rounds=max_rounds)
     return research_agent.run(prompt, tools=tools,
@@ -107,7 +109,8 @@ def execute_research(session, research_run_id: int, settings, *, run_agent=None)
         report = runner(prompt, settings, provider, model,
                         budget_chars=cfg.get("budget_chars", 100_000),
                         max_rounds=cfg.get("max_rounds", 8),
-                        research_run_id=research_run_id)
+                        research_run_id=research_run_id,
+                        reasoning_effort=llm_cfg.get("reasoning_effort"))
         run.report_markdown = report.markdown
         run.citations = [asdict(c) if hasattr(type(c), "__dataclass_fields__")
                          else vars(c) for c in report.citations]

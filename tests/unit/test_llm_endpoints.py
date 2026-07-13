@@ -301,3 +301,18 @@ def test_resolve_llm_binds_endpoint_reasoning_effort(tmp_path, monkeypatch):
         call, row = llm_endpoints.resolve_llm(s, settings)
         call("hello")
         assert captured["reasoning_effort"] == "low"
+
+
+def test_endpoint_reasoning_effort_lookup(tmp_path):
+    from madosho_server import db, llm_endpoints
+    db.configure_engine(f"sqlite:///{tmp_path/'re3.db'}")
+    db.create_all()
+    with db.SessionLocal() as s:
+        s.add(db.LlmEndpoint(name="a", provider="openai", model="m",
+                             api_base="u", is_default=True, reasoning_effort="low"))
+        s.add(db.LlmEndpoint(name="b", provider="openai", model="other",
+                             api_base="u"))
+        s.commit()
+        assert llm_endpoints.endpoint_reasoning_effort(s, "openai", "m") == "low"
+        assert llm_endpoints.endpoint_reasoning_effort(s, "openai", "other") is None
+        assert llm_endpoints.endpoint_reasoning_effort(s, "nope", "nope") is None

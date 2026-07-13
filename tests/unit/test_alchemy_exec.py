@@ -50,7 +50,8 @@ def test_execute_writes_draft_and_usage(tmp_path):
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
                       coverage="search", guidance=None, prior_draft=None,
                       prior_sections=None, prior_ledger=None,
-                      on_progress=None, should_cancel=None):
+                      reasoning_effort=None,
+                      on_progress=None, on_event=None, should_cancel=None):
         seen.update(goal_type=goal_type, corpus=corpus, guidance=guidance,
                     prior_draft=prior_draft)
         return FakeResult()
@@ -77,7 +78,8 @@ def test_execute_passes_prior_draft_on_rerun(tmp_path):
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
                       coverage="search", guidance=None, prior_draft=None,
                       prior_sections=None, prior_ledger=None,
-                      on_progress=None, should_cancel=None):
+                      reasoning_effort=None,
+                      on_progress=None, on_event=None, should_cancel=None):
         captured.update(prior_draft=prior_draft, guidance=guidance)
         return FakeResult()
 
@@ -109,7 +111,8 @@ def test_execute_real_path_wrapper_call_shape(tmp_path, monkeypatch):
                  alchemy_run_id, tools=None, llm=None, should_cancel=None,
                  coverage="search", include_generated=False, concurrency=1,
                  prior_sections=None,
-                 prior_ledger=None, on_progress=None):
+                 prior_ledger=None, reasoning_effort=None,
+                 on_progress=None, on_event=None):
         got.update(tools=tools, llm=llm, should_cancel=should_cancel,
                    budget_chars=budget_chars, max_rounds=max_rounds,
                    max_llm_calls=max_llm_calls)
@@ -135,7 +138,8 @@ def test_execute_honours_cancel_set_during_run(tmp_path):
     def cancelling_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
                             coverage="search", guidance=None, prior_draft=None,
                             prior_sections=None, prior_ledger=None,
-                            on_progress=None, should_cancel=None):
+                            reasoning_effort=None,
+                            on_progress=None, on_event=None, should_cancel=None):
         # simulate an external cancel arriving while the goal is working, via
         # a separate session/connection (as a real API request would use)
         with db.SessionLocal() as s2:
@@ -157,6 +161,34 @@ def test_execute_honours_cancel_set_during_run(tmp_path):
         # cancel-check (and the expire_all() inside it) must not discard it.
         assert got.draft_markdown is not None
         assert got.draft_markdown == "# Draft\nbody"
+
+
+def test_event_sink_appends_live_and_guards_on_status(tmp_path):
+    """_make_event_sink streams run_log entries onto the row as they arrive
+    (so the web poll shows a live console), appending incrementally, and stops
+    writing once the run leaves 'running' (a late event can't revive a row)."""
+    rid = _seed(tmp_path)
+    with db.SessionLocal() as s:
+        s.get(db.AlchemyRun, rid).status = "running"
+        s.commit()
+
+    sink = alchemy_exec._make_event_sink(rid)
+    sink({"round": 1, "kind": "llm", "has_tool_calls": True})
+    with db.SessionLocal() as s:                       # visible after one event
+        assert s.get(db.AlchemyRun, rid).run_log == [
+            {"round": 1, "kind": "llm", "has_tool_calls": True}]
+
+    sink({"round": 1, "kind": "tool_call", "name": "search", "ok": True})
+    with db.SessionLocal() as s:                       # appended, not replaced
+        log = s.get(db.AlchemyRun, rid).run_log
+        assert len(log) == 2 and log[1]["name"] == "search"
+
+    with db.SessionLocal() as s:                       # run resolves
+        s.get(db.AlchemyRun, rid).status = "done"
+        s.commit()
+    sink({"round": 2, "kind": "llm"})                  # late event is ignored
+    with db.SessionLocal() as s:
+        assert len(s.get(db.AlchemyRun, rid).run_log) == 2
 
 
 def test_make_cancel_check_polarity(tmp_path):
@@ -192,7 +224,8 @@ def test_execute_persists_sections(tmp_path):
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
                       coverage="search", guidance=None, prior_draft=None,
                       prior_sections=None, prior_ledger=None,
-                      on_progress=None, should_cancel=None):
+                      reasoning_effort=None,
+                      on_progress=None, on_event=None, should_cancel=None):
         return FakeResult()
 
     with db.SessionLocal() as s:
@@ -215,7 +248,8 @@ def test_execute_passes_prior_sections_on_rerun(tmp_path):
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
                       coverage="search", guidance=None, prior_draft=None,
                       prior_sections=None, prior_ledger=None,
-                      on_progress=None, should_cancel=None):
+                      reasoning_effort=None,
+                      on_progress=None, on_event=None, should_cancel=None):
         captured.update(prior_sections=prior_sections)
         return FakeResult()
 
@@ -232,7 +266,8 @@ def test_execute_progress_callback_writes_row(tmp_path):
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
                       coverage="search", guidance=None, prior_draft=None,
                       prior_sections=None, prior_ledger=None,
-                      on_progress=None, should_cancel=None):
+                      reasoning_effort=None,
+                      on_progress=None, on_event=None, should_cancel=None):
         on_progress({"phase": "running", "section": "summary",
                      "sections_done": 0, "sections_total": 2})
         with db.SessionLocal() as s2:
@@ -361,7 +396,8 @@ def test_exec_persists_ledger_and_passes_coverage(tmp_path):
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
                       coverage="search", guidance=None, prior_draft=None,
                       prior_sections=None, prior_ledger=None,
-                      on_progress=None, should_cancel=None):
+                      reasoning_effort=None,
+                      on_progress=None, on_event=None, should_cancel=None):
         seen.update(coverage=coverage, prior_ledger=prior_ledger)
         r = FakeResult()
         r.ledger = {"mode": "search", "summary": "ok"}
@@ -383,7 +419,8 @@ def test_exec_passes_prior_ledger_from_based_on_run(tmp_path):
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
                       coverage="search", guidance=None, prior_draft=None,
                       prior_sections=None, prior_ledger=None,
-                      on_progress=None, should_cancel=None):
+                      reasoning_effort=None,
+                      on_progress=None, on_event=None, should_cancel=None):
         seen["prior_ledger"] = prior_ledger
         r = FakeResult(); r.ledger = {}
         return r
@@ -402,7 +439,8 @@ def test_exec_fresh_coverage_skips_prior_ledger(tmp_path):
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
                       coverage="search", guidance=None, prior_draft=None,
                       prior_sections=None, prior_ledger=None,
-                      on_progress=None, should_cancel=None):
+                      reasoning_effort=None,
+                      on_progress=None, on_event=None, should_cancel=None):
         seen["prior_ledger"] = prior_ledger
         r = FakeResult(); r.ledger = {}
         return r
@@ -422,7 +460,8 @@ def _stand_in_capturing(got):
                  alchemy_run_id, tools=None, llm=None, should_cancel=None,
                  coverage="search", include_generated=False, concurrency=1,
                  prior_sections=None,
-                 prior_ledger=None, on_progress=None):
+                 prior_ledger=None, reasoning_effort=None,
+                 on_progress=None, on_event=None):
         got["budget_chars"] = budget_chars
         return FakeResult()
     return stand_in
@@ -480,7 +519,8 @@ def test_execute_persists_artifacts(tmp_path):
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
                       coverage="search", guidance=None, prior_draft=None,
                       prior_sections=None, prior_ledger=None,
-                      on_progress=None, should_cancel=None):
+                      reasoning_effort=None,
+                      on_progress=None, on_event=None, should_cancel=None):
         r = FakeResult()
         # the engine emits plain dicts (DB-free); the adapter turns them into rows
         r.artifacts = [
@@ -516,7 +556,8 @@ def test_execute_no_artifacts_when_result_has_none(tmp_path):
     def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
                       coverage="search", guidance=None, prior_draft=None,
                       prior_sections=None, prior_ledger=None,
-                      on_progress=None, should_cancel=None):
+                      reasoning_effort=None,
+                      on_progress=None, on_event=None, should_cancel=None):
         return FakeResult()   # no .artifacts attribute -> getattr-default -> none
 
     with db.SessionLocal() as s:
@@ -643,3 +684,33 @@ def test_default_run_goal_forwards_concurrency(monkeypatch):
         max_llm_calls=None, alchemy_run_id=1, concurrency=5)
     assert out == "RESULT"
     assert got["concurrency"] == 5
+
+
+def test_execute_threads_reasoning_effort_to_runner(tmp_path):
+    db.configure_engine(f"sqlite:///{tmp_path/'re.db'}")
+    db.create_all()
+    with db.SessionLocal() as s:
+        c = db.Corpus(name="c"); s.add(c); s.flush()
+        g = db.AlchemyGoal(name="g", corpus_id=c.id, goal_type="living-research",
+                           spec={"goal": "x"}, coverage="search")
+        s.add(g); s.flush()
+        run = db.AlchemyRun(goal_id=g.id, version=1, status="pending",
+                            coverage="search",
+                            config={"llm": {"provider": "p", "model": "m",
+                                            "reasoning_effort": "low"},
+                                    "budget_chars": 5000, "max_rounds": 3})
+        s.add(run); s.commit(); rid = run.id
+    seen = {}
+
+    def fake_run_goal(goal_type, spec, *, corpus, tools, llm, budget=None,
+                      coverage="search", guidance=None, prior_draft=None,
+                      prior_sections=None, prior_ledger=None,
+                      reasoning_effort=None, on_progress=None, on_event=None,
+                      should_cancel=None):
+        seen["reasoning_effort"] = reasoning_effort
+        return FakeResult()
+
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, Settings.from_env(),
+                                         run_goal_fn=fake_run_goal)
+    assert seen["reasoning_effort"] == "low"
