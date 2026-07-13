@@ -259,3 +259,19 @@ def test_endpoint_budget_prefers_default_row_when_multiple_match(session):
     ])
     session.commit()
     assert llm_endpoints.endpoint_budget(session, "openai", "m") == (2000, None)
+
+
+def test_reasoning_effort_column_roundtrips(tmp_path):
+    from madosho_server import db
+    db.configure_engine(f"sqlite:///{tmp_path/'re.db'}")
+    db.create_all()
+    with db.SessionLocal() as s:
+        s.add(db.LlmEndpoint(name="codex", provider="openai", model="gpt-5.6-sol",
+                             api_base="http://h/v1", reasoning_effort="low"))
+        s.add(db.LlmEndpoint(name="legacy", provider="openai", model="m",
+                             api_base="http://h/v1"))
+        s.commit()
+    with db.SessionLocal() as s:
+        rows = {r.name: r for r in s.query(db.LlmEndpoint).all()}
+        assert rows["codex"].reasoning_effort == "low"
+        assert rows["legacy"].reasoning_effort is None   # nullable, defaults to unset

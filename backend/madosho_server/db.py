@@ -162,6 +162,12 @@ class LlmEndpoint(Base):
     # run's budget to the model actually assigned.
     context_window_tokens: Mapped[int | None] = mapped_column(default=None)
     source_chars_budget: Mapped[int | None] = mapped_column(default=None)
+    # Opaque, nullable, model-native reasoning-effort string (e.g. "low",
+    # "high", or a provider-specific word). NULL = unset -> madosho sends no
+    # effort signal and any_llm's default applies. Applies to EVERY LLM path
+    # this endpoint feeds (query/indexing/vision), and is the fallback default
+    # under a per-job override for alchemy/research runs.
+    reasoning_effort: Mapped[str | None] = mapped_column(String(32), default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now())
 
@@ -428,6 +434,11 @@ def _ensure_added_columns() -> None:
         conn.execute(text(
             "ALTER TABLE llm_endpoint ADD COLUMN IF NOT EXISTS "
             "source_chars_budget INTEGER"))
+        # Reasoning-effort default (nullable string, no default): existing rows
+        # stay NULL = unset until an operator sets one on the Settings page.
+        conn.execute(text(
+            "ALTER TABLE llm_endpoint ADD COLUMN IF NOT EXISTS "
+            "reasoning_effort VARCHAR(32)"))
         conn.execute(text(
             "ALTER TABLE document_corpus ADD COLUMN IF NOT EXISTS pipeline_id INTEGER"))
         # Carry existing single pins forward into the multi-select table (idempotent):
