@@ -127,3 +127,39 @@ def test_serialize_pipeline_hits_without_origins_is_unchanged():
     row = query_core.serialize_pipeline_hits([ph])[0]
     assert row["citation"] == "x.pdf p.1"
     assert row["origin"] == "source"
+
+
+# ---------------------------------------------------------------------------
+# generate_from_hits reasoning_effort forwarding (Task 10 follow-up)
+# ---------------------------------------------------------------------------
+
+def _settings():
+    from types import SimpleNamespace
+    return SimpleNamespace()
+
+
+def _fake_result():
+    from types import SimpleNamespace
+    return SimpleNamespace(choices=[])
+
+
+def test_generate_from_hits_forwards_reasoning_effort_when_set(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(query_core.llm, "complete",
+                        lambda **kw: captured.update(kw) or _fake_result())
+    query_core.generate_from_hits([], [{"role": "user", "content": "q"}],
+                                  provider="openai", model="m", settings=_settings(),
+                                  reasoning_effort="low")
+    assert captured["reasoning_effort"] == "low"
+
+
+def test_generate_from_hits_omits_reasoning_effort_when_unset(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(query_core.llm, "complete",
+                        lambda **kw: captured.update(kw) or _fake_result())
+    query_core.generate_from_hits([], [{"role": "user", "content": "q"}],
+                                  provider="openai", model="m", settings=_settings())
+    # `llm.complete` itself omits the kwarg from the provider call when falsy
+    # (Task 3); at this seam (the call INTO llm.complete) the default None is
+    # visible as the value, which is the "not forwarded" signal.
+    assert captured.get("reasoning_effort") is None

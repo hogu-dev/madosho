@@ -78,13 +78,15 @@ def last_user_text(messages: list[dict]) -> str:
 
 def generate_from_hits(hits: list[Hit], user_messages: list[dict], provider: str,
                        model: str, settings, template: str | None = None,
-                       stream: bool = False):
+                       stream: bool = False, reasoning_effort: str | None = None):
     """Augment pre-retrieved hits and call the provider. Returns (raw result, hits).
-    Retrieval already happened (multi-index, in the API layer)."""
+    Retrieval already happened (multi-index, in the API layer). reasoning_effort,
+    when set, rides into the provider call; unset leaves it to any_llm's default."""
     messages = augmented_messages(hits, user_messages, template)
     # keyword `messages=` so `lambda **kw` test fakes accept the call too
     result = llm.complete(messages=messages, provider=provider, model=model,
-                          settings=settings, stream=stream)
+                          settings=settings, stream=stream,
+                          reasoning_effort=reasoning_effort)
     return result, hits
 
 

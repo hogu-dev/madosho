@@ -69,7 +69,8 @@ def test_query_unknown_corpus_404(env):
 def test_query_with_llm_returns_answer(env, monkeypatch):
     from types import SimpleNamespace
 
-    def fake_complete(messages, provider, model, settings, stream=False):
+    def fake_complete(messages, provider, model, settings, stream=False,
+                      reasoning_effort=None):
         msg = SimpleNamespace(content="The term is two years.")
         usage = SimpleNamespace(model_dump=lambda: {"total_tokens": 11})
         return SimpleNamespace(choices=[SimpleNamespace(message=msg)], usage=usage)
@@ -92,6 +93,37 @@ def test_query_with_llm_returns_answer(env, monkeypatch):
         assert roles == ["system", "user"]
         assert "Term: two years" in body["messages"][0]["content"]
         assert body["messages"][-1]["content"] == "term?"
+
+
+def test_query_with_llm_endpoint_reasoning_effort_forwarded(env, monkeypatch):
+    """A /query answer resolved via a registry endpoint NAME forwards that
+    endpoint's own reasoning_effort default into the provider call (Task 10
+    follow-up: query was the one path not yet threading it through)."""
+    from types import SimpleNamespace
+
+    captured = {}
+
+    def fake_complete(messages, provider, model, settings, stream=False,
+                      reasoning_effort=None):
+        captured["reasoning_effort"] = reasoning_effort
+        msg = SimpleNamespace(content="The term is two years.")
+        usage = SimpleNamespace(model_dump=lambda: {"total_tokens": 11})
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)], usage=usage)
+
+    with TestClient(query_api.app) as client:
+        _seed()
+        with db.SessionLocal() as s:
+            s.add(db.LlmEndpoint(name="gemma4-local", provider="ollama", model="llama3.1",
+                                 api_base="http://h:8081/v1", reasoning_effort="low",
+                                 is_default=True))
+            s.commit()
+        monkeypatch.setattr(pipeline_cache, "corpus_for",
+                            lambda p, d: _FakeCorpus([_hit("Term: two years", page=1)]))
+        monkeypatch.setattr(query_core.llm, "complete", fake_complete)
+        r = client.post("/query", json={"corpus": "demo", "prompt": "term?",
+                                        "llm": "gemma4-local"})
+        assert r.status_code == 200
+        assert captured["reasoning_effort"] == "low"
 
 
 def test_query_with_bad_llm_string_422(env, monkeypatch):
@@ -153,11 +185,12 @@ def test_resolve_answer_llm_name_match(tmp_path, monkeypatch):
     with db.SessionLocal() as s:
         result = query_api._resolve_answer_llm(s, settings, "gemma4-local")
     assert result is not None
-    provider, model, creds = result
+    provider, model, creds, effort = result
     assert provider == "openai"
     assert model == "gemma-4-e4b"
     assert creds.llm_api_base == "http://h:8081/v1"
     assert creds.llm_api_key == "secret123"
+    assert effort is None
 
 
 def test_resolve_answer_llm_legacy_provider_model(tmp_path):
@@ -168,10 +201,11 @@ def test_resolve_answer_llm_legacy_provider_model(tmp_path):
     with db.SessionLocal() as s:
         result = query_api._resolve_answer_llm(s, settings, "openai:gpt-x")
     assert result is not None
-    provider, model, creds = result
+    provider, model, creds, effort = result
     assert provider == "openai"
     assert model == "gpt-x"
     assert creds is settings
+    assert effort is None
 
 
 def test_resolve_answer_llm_garbage_returns_none(tmp_path):
