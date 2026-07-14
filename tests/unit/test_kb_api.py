@@ -55,3 +55,53 @@ def test_create_kb_missing_corpus_404(client):
 
 def test_get_missing_kb_404(client):
     assert client.get("/kbs/999").status_code == 404
+
+
+def _kb(client, cid, name="KB"):
+    return client.post(f"/corpora/{cid}/kbs", json={"name": name}).json()["id"]
+
+
+def test_add_get_edit_page(client):
+    cid = _corpus(client)
+    kid = _kb(client, cid)
+    r = client.post(f"/kbs/{kid}/pages", json={
+        "type": "concept", "title": "Reranking", "description": "reorder",
+        "tags": ["ir"], "sources": ["doc:3"], "body": "cross encoder"})
+    assert r.status_code == 201
+    page = r.json()
+    assert page["slug"] == "reranking" and page["body"] == "cross encoder"
+
+    got = client.get(f"/kbs/{kid}/pages/reranking").json()
+    assert got["title"] == "Reranking" and got["tags"] == ["ir"]
+
+    up = client.put(f"/kbs/{kid}/pages/reranking",
+                    json={"description": "reorder hits", "body": "bi+cross"})
+    assert up.status_code == 200 and up.json()["description"] == "reorder hits"
+    assert client.get(f"/kbs/{kid}/pages/reranking").json()["body"] == "bi+cross"
+
+
+def test_add_page_bad_type_422_and_missing_page_404(client):
+    cid = _corpus(client)
+    kid = _kb(client, cid)
+    r = client.post(f"/kbs/{kid}/pages",
+                    json={"type": "bogus", "title": "X", "description": "d"})
+    assert r.status_code == 422
+    assert client.get(f"/kbs/{kid}/pages/nope").status_code == 404
+
+
+def test_add_duplicate_page_409(client):
+    cid = _corpus(client)
+    kid = _kb(client, cid)
+    body = {"type": "concept", "title": "Chunking", "description": "d"}
+    assert client.post(f"/kbs/{kid}/pages", json=body).status_code == 201
+    assert client.post(f"/kbs/{kid}/pages", json=body).status_code == 409
+
+
+def test_search_pages(client):
+    cid = _corpus(client)
+    kid = _kb(client, cid)
+    client.post(f"/kbs/{kid}/pages", json={
+        "type": "concept", "title": "Reranking", "description": "d",
+        "body": "cross encoder scoring"})
+    hits = client.get(f"/kbs/{kid}/search", params={"q": "cross encoder"}).json()
+    assert [h["slug"] for h in hits] == ["reranking"]

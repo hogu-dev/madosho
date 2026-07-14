@@ -190,6 +190,33 @@ class KbDetailRead(KbRead):
     pages: list[KbPageSummary] = []
 
 
+class KbPageWrite(BaseModel):
+    type: str
+    title: str
+    description: str = ""
+    tags: list[str] = []
+    sources: list = []
+    body: str = ""
+
+
+class KbPageEdit(BaseModel):
+    description: str | None = None
+    tags: list[str] | None = None
+    sources: list | None = None
+    body: str | None = None
+
+
+class KbPageRead(BaseModel):
+    type: str
+    title: str
+    slug: str
+    description: str
+    tags: list[str] = []
+    timestamp: str = ""
+    sources: list = []
+    body: str = ""
+
+
 class CorpusMemberPipeline(BaseModel):
     """One of a member document's pipelines, as offered in the corpus page's
     per-document picker."""
@@ -1160,6 +1187,54 @@ def delete_kb(kb_id: int, session: SessionDep, settings: SettingsDep):
     session.delete(kb)
     session.commit()
     return Response(status_code=204)
+
+
+@app.post("/kbs/{kb_id}/pages", response_model=KbPageRead, status_code=201)
+def add_kb_page(kb_id: int, body: KbPageWrite, session: SessionDep,
+                settings: SettingsDep):
+    kb = _kb_or_404(session, kb_id)
+    root = kb_store.kb_root(settings.kb_dir, kb.id)
+    try:
+        page = kb_store.add_page(root, type=body.type, title=body.title,
+                                 description=body.description, tags=body.tags,
+                                 sources=body.sources, body=body.body)
+    except kb_store.KbStoreError as exc:
+        msg = str(exc)
+        code = 409 if "already exists" in msg else 422
+        raise HTTPException(status_code=code, detail=msg)
+    return KbPageRead(**page)
+
+
+@app.get("/kbs/{kb_id}/pages/{slug}", response_model=KbPageRead)
+def get_kb_page(kb_id: int, slug: str, session: SessionDep,
+                settings: SettingsDep):
+    kb = _kb_or_404(session, kb_id)
+    page = kb_store.get_page(kb_store.kb_root(settings.kb_dir, kb.id), slug)
+    if page is None:
+        raise HTTPException(status_code=404, detail="page not found")
+    return KbPageRead(**page)
+
+
+@app.put("/kbs/{kb_id}/pages/{slug}", response_model=KbPageRead)
+def edit_kb_page(kb_id: int, slug: str, body: KbPageEdit, session: SessionDep,
+                 settings: SettingsDep):
+    kb = _kb_or_404(session, kb_id)
+    root = kb_store.kb_root(settings.kb_dir, kb.id)
+    try:
+        page = kb_store.edit_page(root, slug, description=body.description,
+                                  tags=body.tags, sources=body.sources,
+                                  body=body.body)
+    except kb_store.KbStoreError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return KbPageRead(**page)
+
+
+@app.get("/kbs/{kb_id}/search", response_model=list[KbPageSummary])
+def search_kb(kb_id: int, session: SessionDep, settings: SettingsDep,
+              q: str = Query(...)):
+    kb = _kb_or_404(session, kb_id)
+    root = kb_store.kb_root(settings.kb_dir, kb.id)
+    return [KbPageSummary(**p) for p in kb_store.search_pages(root, q)]
 
 
 @app.put("/corpora/{corpus_id}/config", response_model=CorpusRead)
