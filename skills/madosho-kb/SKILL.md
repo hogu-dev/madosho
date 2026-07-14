@@ -29,8 +29,11 @@ Add a whole external llmkb folder as one document in a corpus:
 The KB is packed into a single document (its pages become the document's content)
 and ingested. Indexing/building a pipeline over it is the user's step - do not
 assume it is retrievable until they have built one. Once imported and indexed,
-read it like any other document with the madosho-search tools (`search`,
-`search-doc`, `get-doc`).
+read it like any other document with the madosho-search tools, for example:
+
+    madosho-cli search <corpus> "<query>" --json
+
+Read the returned chunks and cite them, the same as any other madosho document.
 
 Recording new knowledge back into the folder is done with llmkb, the tool that
 owns the KB format, so pages stay correct and lint-clean:
