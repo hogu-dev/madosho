@@ -1,3 +1,6 @@
+import io
+import zipfile
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -105,3 +108,27 @@ def test_search_pages(client):
         "body": "cross encoder scoring"})
     hits = client.get(f"/kbs/{kid}/search", params={"q": "cross encoder"}).json()
     assert [h["slug"] for h in hits] == ["reranking"]
+
+
+def _kb_zip() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("mykb/kb.yaml", "name: Imported\ndescription: x\nformat: 1\ncreated: 2026-07-14\n")
+        z.writestr("mykb/wiki/index.md", "# Index\n")
+        z.writestr("mykb/wiki/log.md", "# Log\n")
+        z.writestr("mykb/wiki/concepts/chunking.md",
+                   "---\ntype: concept\ntitle: Chunking\ndescription: split\n"
+                   "tags: []\ntimestamp: 2026-07-14\nsources: []\n---\n\nsplit text\n")
+    return buf.getvalue()
+
+
+def test_import_kb_creates_server_owned_kb(client):
+    cid = _corpus(client)
+    r = client.post(f"/corpora/{cid}/kbs/import",
+                    files={"archive": ("mykb.zip", _kb_zip(), "application/zip")},
+                    data={"name": "Imported"})
+    assert r.status_code == 201
+    kid = r.json()["id"]
+    pages = client.get(f"/kbs/{kid}").json()["pages"]
+    assert [p["slug"] for p in pages] == ["chunking"]
+    assert client.get(f"/kbs/{kid}/pages/chunking").json()["body"] == "split text"

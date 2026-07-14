@@ -1676,6 +1676,80 @@ def import_kb(session: SessionDep, settings: SettingsDep,
                          name=None, options=None)
 
 
+@app.post("/corpora/{corpus_id}/kbs/import", response_model=KbRead, status_code=201)
+def import_kb_workspace(corpus_id: int, session: SessionDep, settings: SettingsDep,
+                        archive: UploadFile | None = File(default=None),
+                        files: list[UploadFile] = File(default=[]),
+                        paths: list[str] = Form(default=[]),
+                        name: str | None = Form(default=None)):
+    """Import an llmkb folder/zip as a NEW server-owned KB in this corpus
+    (browsable + editable), not a flat document. Mirrors the document import
+    unpack, then copies pages into settings.kb_dir/kb-<id>/."""
+    corpus = session.get(db.Corpus, corpus_id)
+    if corpus is None:
+        raise HTTPException(status_code=404, detail="corpus not found")
+    if archive is None and not files:
+        raise HTTPException(status_code=400,
+                            detail="provide a KB: a .zip archive or the folder's files")
+    with tempfile.TemporaryDirectory(prefix="madosho-kbimport-") as tmp:
+        base = Path(tmp)
+        total = 0
+        if archive is not None:
+            raw = archive.file.read()
+            total += len(raw)
+            if total > _KB_IMPORT_CAP:
+                raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+            try:
+                zf = zipfile.ZipFile(io.BytesIO(raw))
+            except zipfile.BadZipFile:
+                raise HTTPException(status_code=400, detail="archive is not a valid .zip")
+            with zf:
+                for entry in zf.namelist():
+                    if entry.endswith("/"):
+                        continue
+                    data = zf.read(entry)
+                    total += len(data)
+                    if total > _KB_IMPORT_CAP:
+                        raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+                    _kb_write_member(base, entry, data)
+        else:
+            if len(files) != len(paths):
+                raise HTTPException(status_code=400,
+                                    detail="files and paths must line up one-to-one")
+            for f, rel in zip(files, paths):
+                data = f.file.read()
+                total += len(data)
+                if total > _KB_IMPORT_CAP:
+                    raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+                _kb_write_member(base, rel, data)
+        src_root = _find_kb_root(base)
+        kb_name = (name or src_root.name).strip() or src_root.name
+        if session.scalar(select(db.Kb).where(db.Kb.corpus_id == corpus_id,
+                                              db.Kb.name == kb_name)):
+            raise HTTPException(status_code=409,
+                                detail=f"a KB named '{kb_name}' already exists in this corpus")
+        try:
+            slug = kb_store._slug(kb_name)
+        except kb_store.KbStoreError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        kb = db.Kb(corpus_id=corpus_id, name=kb_name, slug=slug)
+        session.add(kb)
+        try:
+            session.flush()      # assign kb.id without committing yet
+        except IntegrityError:
+            session.rollback()
+            raise HTTPException(status_code=409,
+                                detail=f"a KB named '{kb_name}' already exists in this corpus")
+        try:
+            kb_store.import_from_folder(settings.kb_dir, kb.id, kb_name, src_root)
+        except kb_store.KbStoreError as exc:
+            session.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
+    session.commit()
+    session.refresh(kb)
+    return _kb_read(session, kb)
+
+
 @app.get("/documents/{document_id}", response_model=DocumentDetailRead)
 def get_document(document_id: int, session: SessionDep):
     doc = session.get(db.Document, document_id)
