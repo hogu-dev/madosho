@@ -6,6 +6,8 @@ one codebase: a **kernel library** for building queryable corpora from documents
 **service platform** (control plane on :8000 + query plane on :8001 + a
 background worker), and a **web workbench** for managing documents and tuning
 retrieval pipelines. The focus is the storage and retrieval side of RAG.
+Corpora hold both frozen source documents and editable, agent-readable
+**knowledge bases**.
 
 **Why:** what is the best way to do RAG? The honest answer is "it depends" - on
 the documents, the questions, and the tools. madosho is built to let you find
@@ -369,6 +371,8 @@ flowchart TB
 ```
 
 A **Corpus** is source documents + a default recipe + the indexes built from them.
+It can also hold **knowledge bases** - curated, editable page collections that
+live alongside the frozen source documents (see "Knowledge bases" below).
 
 **Ingest** is fixed slots: `parser -> chunker -> embedder -> store`, plus which
 indexes to build (`bm25`, `dense`). In the library path the store is LanceDB
@@ -448,6 +452,10 @@ of corpora:
 
 ![The document library](docs/img/documents.png)
 
+And a **Knowledge bases** workspace - the editable counterpart to the frozen
+document library, where curated wiki pages are grouped by corpus and browsed,
+added, or revised in place (see "Knowledge bases" below).
+
 ## Autonomous agents: Research and Alchemy
 
 madosho drives its retrieval core with two agentic surfaces. Both produce cited
@@ -494,6 +502,43 @@ sugar [smoke-kb.md]. ...
 Both surfaces are headless too: `madosho alchemy ...` and the same tools over the
 agent manifest. Retrieval and citations work without an LLM; the generated draft
 needs one wired (see Quickstart).
+
+## Knowledge bases
+
+Alongside its raw documents, a corpus can hold **knowledge bases**: curated,
+editable collections of wiki-style pages. Where an uploaded document is frozen
+(indexed once, never rewritten), a knowledge base is a first-class member of the
+corpus you keep working on - a place to distill what the source material means
+into pages you can read, add to, and revise. The shape is
+`corpus -> many knowledge bases -> many pages`, and each page is a small
+front-mattered markdown file organized by type (concept, entity, and so on).
+
+madosho owns knowledge bases server-side, at parity with documents - create,
+browse, edit, and search them from the workbench, the CLI, or an agent:
+
+- **Web workbench:** a **Knowledge bases** page lists every KB grouped by corpus
+  and creates new ones; opening a KB browses its pages by type and lets you view,
+  add, and edit a page in place.
+- **CLI:** `create-kb`, `list-kbs`, `get-kb-page`, `add-kb-page`, `edit-kb-page`,
+  and `search-kb` cover the full lifecycle; `import-kb` folds an external
+  llmkb-format wiki folder (or zip) into a corpus.
+- **Agents:** the read-side tools `list-kbs`, `get-kb-page`, and `search-kb` ride
+  the same shared `agent-tools` manifest as the retrieval tools, so any agent
+  (MCP, toolserver, CLI) can pull a KB page as grounding. The write tools
+  (create / add / edit) are CLI- and web-only by design.
+
+Retrieval today is a **whole-page grab** - `get-kb-page` returns a full page
+verbatim, which suits an agent reading a self-contained concept note; semantic
+indexing of KB pages is a later phase. Pages live on disk under a `/data/kbs`
+volume in the portable llmkb wiki format, with a thin row in Postgres tracking
+each KB's corpus and name.
+
+```console
+$ madosho create-kb --corpus biology --name photosynthesis-notes
+$ madosho add-kb-page photosynthesis-notes --type concept --title "Calvin cycle" \
+    --body "The light-independent reactions that fix CO2 into sugar."
+$ madosho get-kb-page photosynthesis-notes calvin-cycle
+```
 
 ## Bundled components
 
@@ -711,6 +756,9 @@ picks are the smaller Granite, gpt-oss-20B, Qwen3, and Gemma 4 rows.
 - **More Alchemy goal types.** The autonomous-goals engine has shipped (see
   "Autonomous agents: Research and Alchemy"); planned next are richer goal shapes
   on top of it, such as a wiki goal that maintains many linked pages.
+- **Agent-authored knowledge bases.** The knowledge-base workspace has shipped
+  (see "Knowledge bases"); planned next is letting an agent populate a KB from a
+  document or corpus, then richer manual editing (tags, sources, moving pages).
 - **HTTPS/TLS:** an opt-in Caddy overlay ships in `examples/tls/` (local-CA
   certificates for LAN setups, Let's Encrypt for public domains). Still to
   come: native TLS flags on the services themselves for proxy-free
