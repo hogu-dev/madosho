@@ -4,6 +4,8 @@ import { Documents } from "./pages/Documents";
 import { Jobs } from "./pages/Jobs";
 import { Corpora } from "./pages/Corpora";
 import { CorpusDetail } from "./pages/CorpusDetail";
+import { KnowledgeBases } from "./pages/KnowledgeBases";
+import { KbDetail } from "./pages/KbDetail";
 import { NotFound } from "./pages/NotFound";
 import { Workbench } from "./pages/Workbench";
 import { Scrying } from "./pages/Scrying";
@@ -27,6 +29,8 @@ export const routes = [
     { path: "jobs", element: <Jobs /> },
     { path: "corpora", element: <Corpora /> },
     { path: "corpora/:corpusId", element: <CorpusDetail /> },
+    { path: "knowledge-bases", element: <KnowledgeBases /> },
+    { path: "knowledge-bases/:kbId", element: <KbDetail /> },
     { path: "scrying", element: <Scrying /> },
     { path: "compare", element: <Compare /> },
     { path: "quality", element: <Quality /> },

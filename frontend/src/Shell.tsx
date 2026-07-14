@@ -3,7 +3,7 @@ import { Frame, Breadcrumbs } from "./design/Frame";
 import { ReadOnlyBanner } from "./auth/ReadOnlyBanner";
 
 const CRUMB: Record<string, string> = {
-  documents: "Documents", corpora: "Corpora", scrying: "Scrying",
+  documents: "Documents", corpora: "Corpora", "knowledge-bases": "Knowledge bases", scrying: "Scrying",
   quality: "Quality", research: "Research", alchemy: "Alchemy",
   settings: "Settings", keys: "Keys", users: "Users",
 };
