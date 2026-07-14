@@ -112,8 +112,16 @@ def _page_path(root: Path, type: str, title: str) -> Path:
 
 
 def _find_by_slug(root: Path, slug: str) -> Path | None:
+    # Reject anything that isn't a single, contained filename component -
+    # a traversal slug (containing "/", "\\", or "..") must never let the
+    # lookup escape the KB folder (mirrors _page_path's containment check).
+    if slug != Path(slug).name or slug in ("", ".", "..") or "/" in slug or "\\" in slug:
+        return None
     for sub in _TYPE_TO_SUBDIR.values():
-        cand = root / sub / f"{slug}.md"
+        base = (root / sub).resolve()
+        cand = base / f"{slug}.md"
+        if cand.resolve().parent != base:
+            continue
         if cand.exists():
             return cand
     return None

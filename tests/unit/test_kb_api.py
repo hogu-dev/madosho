@@ -83,6 +83,22 @@ def test_add_get_edit_page(client):
     assert client.get(f"/kbs/{kid}/pages/reranking").json()["body"] == "bi+cross"
 
 
+def test_get_page_traversal_slug_rejected(client):
+    cid = _corpus(client)
+    kid = _kb(client, cid)
+    client.post(f"/kbs/{kid}/pages", json={
+        "type": "concept", "title": "Reranking", "description": "d",
+        "body": "cross encoder"})
+    # %2e%2e%2f decodes to "../" - the route still gets a raw "../" component
+    # once the client/server decode the path, so this exercises the same
+    # containment guard as a literal "../" would.
+    r = client.get(f"/kbs/{kid}/pages/%2e%2e%2fsecret")
+    assert r.status_code in (404, 422)
+    # sanity: a normal missing slug still 404s (store-level guarantee is the
+    # real backstop; this is best-effort defense-in-depth at the API layer)
+    assert client.get(f"/kbs/{kid}/pages/nope").status_code == 404
+
+
 def test_add_page_bad_type_422_and_missing_page_404(client):
     cid = _corpus(client)
     kid = _kb(client, cid)

@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Callable, Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Path as PathParam, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import and_, delete, or_, select
@@ -1206,8 +1206,8 @@ def add_kb_page(kb_id: int, body: KbPageWrite, session: SessionDep,
 
 
 @app.get("/kbs/{kb_id}/pages/{slug}", response_model=KbPageRead)
-def get_kb_page(kb_id: int, slug: str, session: SessionDep,
-                settings: SettingsDep):
+def get_kb_page(kb_id: int, session: SessionDep, settings: SettingsDep,
+                slug: str = PathParam(..., pattern=r"^[\w.-]+$")):
     kb = _kb_or_404(session, kb_id)
     page = kb_store.get_page(kb_store.kb_root(settings.kb_dir, kb.id), slug)
     if page is None:
@@ -1216,8 +1216,8 @@ def get_kb_page(kb_id: int, slug: str, session: SessionDep,
 
 
 @app.put("/kbs/{kb_id}/pages/{slug}", response_model=KbPageRead)
-def edit_kb_page(kb_id: int, slug: str, body: KbPageEdit, session: SessionDep,
-                 settings: SettingsDep):
+def edit_kb_page(kb_id: int, body: KbPageEdit, session: SessionDep,
+                 settings: SettingsDep, slug: str = PathParam(..., pattern=r"^[\w.-]+$")):
     kb = _kb_or_404(session, kb_id)
     root = kb_store.kb_root(settings.kb_dir, kb.id)
     try:

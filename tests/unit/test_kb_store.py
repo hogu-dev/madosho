@@ -75,6 +75,28 @@ def test_edit_missing_page_raises(tmp_path):
         kb_store.edit_page(root, "nope", body="x")
 
 
+def test_find_by_slug_blocks_traversal(tmp_path):
+    root = kb_store.create_kb(str(tmp_path), 1, "KB")
+    sentinel = tmp_path / "secret.md"
+    sentinel.write_text("TOP SECRET", encoding="utf-8")
+
+    traversal_slugs = [
+        "../../secret",
+        "../secret",
+        "../../../../etc/passwd",
+        "/etc/passwd",
+        "..",
+        "wiki/../../secret",
+    ]
+    for slug in traversal_slugs:
+        assert kb_store.get_page(root, slug) is None, slug
+        with pytest.raises(kb_store.KbStoreError):
+            kb_store.edit_page(root, slug, body="pwned")
+
+    # the sentinel file must be untouched by any of the attempts above
+    assert sentinel.read_text(encoding="utf-8") == "TOP SECRET"
+
+
 def test_list_and_search_pages(tmp_path):
     root = kb_store.create_kb(str(tmp_path), 1, "KB")
     kb_store.add_page(root, type="concept", title="Reranking",
