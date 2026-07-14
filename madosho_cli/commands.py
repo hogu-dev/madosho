@@ -210,6 +210,8 @@ def cmd_list_kbs(args: argparse.Namespace) -> int:
     if args.json:
         _emit(data)
     else:
+        if not data:
+            print("(no knowledge bases)")
         for k in data:
             print(f"{k['id']:>4}  {k['corpus_name']}  {k['name']}")
     return 0
@@ -258,6 +260,8 @@ def cmd_search_kb(args: argparse.Namespace) -> int:
     if args.json:
         _emit(data)
     else:
+        if not data:
+            print("(no results)")
         for h in data:
             print(f"{h['slug']}\t{h['title']}")
     return 0
