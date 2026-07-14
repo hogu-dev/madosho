@@ -114,6 +114,18 @@ def dispatch(name: str, arguments: dict) -> dict:
             guidance=arguments.get("guidance"),
             max_llm_calls=arguments["max_llm_calls"],
         )
+    if name == "list-kbs":
+        # core returns a bare list, but MCP structured content must be a dict
+        # (the SDK would try to validate a bare list as content blocks), so
+        # wrap it -- on this transport only; CLI/toolserver return the raw list.
+        return {"kbs": core.list_kbs()}
+    if name == "get-kb-page":
+        return core.get_kb_page(arguments["kb_id"], arguments["slug"])
+    if name == "search-kb":
+        # core returns a bare list, but MCP structured content must be a dict
+        # (the SDK would try to validate a bare list as content blocks), so
+        # wrap it -- on this transport only; CLI/toolserver return the raw list.
+        return {"results": core.search_kb(arguments["kb_id"], arguments["query"])}
     raise ValueError(f"unknown tool: {name!r}")
 
 
