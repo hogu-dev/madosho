@@ -315,6 +315,7 @@ def test_manifest_shape_and_invariants():
         "create-corpus", "upload-document", "build-pipeline",
         "add-document-to-corpus", "document-status",
         "list-goals", "goal-runs", "export-goal-run", "run-goal",
+        "list-kbs", "get-kb-page", "search-kb",
     ]
     for t in m["tools"]:
         assert set(t) >= {"name", "description", "parameters", "invocation"}
@@ -408,11 +409,22 @@ def test_manifest_run_goal_params():
     }
 
 
+def test_manifest_includes_kb_read_tools():
+    from madosho_cli.manifest import build_manifest
+    names = {t["name"] for t in build_manifest()["tools"]}
+    assert {"list-kbs", "get-kb-page", "search-kb"} <= names
+    tool = next(t for t in build_manifest()["tools"] if t["name"] == "get-kb-page")
+    assert tool["scope"] == "read"
+    assert tool["invocation"] == {
+        "subcommand": "get-kb-page", "positional": ["kb_id", "slug"], "options": []}
+    assert set(tool["parameters"]["required"]) == {"kb_id", "slug"}
+
+
 def test_agent_tools_cli_json(capsys):
     rc = cli_main.main(["agent-tools", "--json"])
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
-    assert "tools" in out and len(out["tools"]) == 15
+    assert "tools" in out and len(out["tools"]) == 18
 
 
 def test_agent_tools_cli_human(capsys):
