@@ -10,7 +10,7 @@ class Settings:
     qdrant_url: str
     filestore_dir: str
     corpora_dir: str        # kernel per-corpus state (manifest etc.)
-    kb_dir: str             # server-owned KB folders (llmkb v1), one per kb-<id>
+    kb_dir: str = "/data/kbs"   # server-owned KB folders (llmkb v1), one per kb-<id>
     llm_api_key: str | None = None
     llm_api_base: str | None = None
     # Index-time LLM (e.g. the contextual chunker situating chunks at build time).
