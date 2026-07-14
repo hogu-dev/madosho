@@ -65,6 +65,12 @@ describe("KbDetail", () => {
       expect.objectContaining({ body: "new body" })));
   });
 
+  it("shows an error message (not a blank page) when the initial load fails", async () => {
+    (api.getKb as any).mockRejectedValue(new Error("kb not found"));
+    renderAt();
+    expect(await screen.findByText("kb not found")).toBeInTheDocument();
+  });
+
   it("adding a page calls addKbPage with the typed fields", async () => {
     const add = (api.addKbPage as any).mockResolvedValue({
       type: "concept", title: "New idea", slug: "new-idea", description: "d",

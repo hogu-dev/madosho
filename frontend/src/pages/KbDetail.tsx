@@ -68,6 +68,8 @@ export function KbDetail() {
         <span style={{ color: "var(--ink)" }}>{kb?.name ?? "…"}</span>
       </div>
 
+      {error && <p style={{ color: "var(--oxblood)", fontSize: 13 }}>{error}</p>}
+
       {kb && (
         <>
           <Heading level={1} style={{ margin: 0 }}>{kb.name}</Heading>
@@ -86,20 +88,19 @@ export function KbDetail() {
             </div>
           )}
 
-          {error && <p style={{ color: "var(--oxblood)", fontSize: 13 }}>{error}</p>}
-
           {adding && (
             <Card style={{ display: "grid", gap: 8, maxWidth: 640, margin: "12px 0 20px" }}>
-              <select value={newPage.type}
+              <select value={newPage.type} aria-label="Page type"
                 onChange={(e) => setNewPage({ ...newPage, type: e.target.value })}
                 style={inputStyle}>
                 {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
-              <input placeholder="Title" value={newPage.title} style={inputStyle}
+              <input placeholder="Title" value={newPage.title} style={inputStyle} aria-label="Page title"
                 onChange={(e) => setNewPage({ ...newPage, title: e.target.value })} />
               <input placeholder="Description" value={newPage.description} style={inputStyle}
+                aria-label="Page description"
                 onChange={(e) => setNewPage({ ...newPage, description: e.target.value })} />
-              <textarea placeholder="Body" rows={6} value={newPage.body}
+              <textarea placeholder="Body" rows={6} value={newPage.body} aria-label="Page body"
                 style={{ ...inputStyle, fontFamily: "var(--font-mono)", resize: "vertical" }}
                 onChange={(e) => setNewPage({ ...newPage, body: e.target.value })} />
               <div>
@@ -161,9 +162,9 @@ export function KbDetail() {
               {open && editing && (
                 <Card style={{ display: "grid", gap: 8 }}>
                   <Heading level={2} style={{ margin: 0 }}>{open.title}</Heading>
-                  <input value={draft.description} style={inputStyle}
+                  <input value={draft.description} style={inputStyle} aria-label="Edit description"
                     onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
-                  <textarea rows={10} value={draft.body}
+                  <textarea rows={10} value={draft.body} aria-label="Edit body"
                     style={{ ...inputStyle, fontFamily: "var(--font-mono)", resize: "vertical" }}
                     onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
                   <div style={{ display: "flex", gap: 8 }}>
