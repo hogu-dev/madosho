@@ -116,7 +116,7 @@ def test_list_documents_resolves_name(fake_http, capsys):
     assert [d["id"] for d in out["documents"]] == [3, 4]
     assert out["documents"][0] == {
         "id": 3, "filename": "afti.pdf", "status": "indexed",
-        "selected_pipeline_id": None,
+        "selected_pipeline_id": None, "origin": "source", "origin_label": "",
     }
     assert out["documents"][1]["selected_pipeline_id"] == 10
 
@@ -126,6 +126,44 @@ def test_list_documents_unknown_corpus_errors(fake_http, capsys):
     rc = cli_main.main(["list-documents", "nope", "--json"])
     assert rc == 1
     assert "corpus not found" in capsys.readouterr().err
+
+
+def test_list_documents_prints_generated_suffix(fake_http, capsys):
+    # Stage D: a generated doc's human-readable row gets a "[generated: ...]"
+    # suffix carried verbatim from the API's origin_label (no CLI-side
+    # formula) - a source row is unaffected.
+    fake_http({
+        "/corpora": [{"id": 2, "name": "reports", "config": {}}],
+        "/corpora/2/documents": [
+            {"id": 5, "filename": "src.pdf", "status": "indexed",
+             "selected_pipeline_id": None, "origin": "source",
+             "origin_label": ""},
+            {"id": 6, "filename": "find_vuln-v2.md", "status": "indexed",
+             "selected_pipeline_id": None, "origin": "generated",
+             "origin_label": "[generated: find_vuln v2]"},
+        ],
+    })
+    rc = cli_main.main(["list-documents", "reports"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "find_vuln-v2.md  [generated: find_vuln v2]" in out
+    assert "src.pdf" in out
+    assert "src.pdf  [generated" not in out    # source row has no suffix
+
+
+def test_list_documents_json_carries_origin(fake_http, capsys):
+    fake_http({
+        "/corpora": [{"id": 2, "name": "reports", "config": {}}],
+        "/corpora/2/documents": [
+            {"id": 6, "filename": "g.md", "status": "indexed",
+             "selected_pipeline_id": None, "origin": "generated",
+             "origin_label": "[generated: g v1]"},
+        ],
+    })
+    cli_main.main(["list-documents", "reports", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["documents"][0]["origin"] == "generated"
+    assert out["documents"][0]["origin_label"] == "[generated: g v1]"
 
 
 def _hit(i):
@@ -276,6 +314,7 @@ def test_manifest_shape_and_invariants():
         "list-corpora", "list-documents", "list-pipelines",
         "create-corpus", "upload-document", "build-pipeline",
         "add-document-to-corpus", "document-status",
+        "list-goals", "goal-runs", "export-goal-run", "run-goal",
     ]
     for t in m["tools"]:
         assert set(t) >= {"name", "description", "parameters", "invocation"}
@@ -336,11 +375,44 @@ def test_manifest_list_pipelines_params():
     }
 
 
+def test_manifest_export_goal_run_params():
+    from madosho_cli.manifest import build_manifest
+
+    t = next(t for t in build_manifest()["tools"] if t["name"] == "export-goal-run")
+    assert t["scope"] == "read"
+    assert t["parameters"]["required"] == ["goal"]
+    assert set(t["parameters"]["properties"]) == {"goal", "version"}
+    assert t["invocation"] == {
+        "subcommand": "export-goal-run",
+        "positional": ["goal"],
+        "options": ["version"],
+    }
+
+
+def test_manifest_run_goal_params():
+    from madosho_cli.manifest import build_manifest
+
+    t = next(t for t in build_manifest()["tools"] if t["name"] == "run-goal")
+    assert t["scope"] == "write"
+    # max_llm_calls is REQUIRED at the tool surface (the API would default it):
+    # an agent must never be able to launch an uncapped run
+    assert t["parameters"]["required"] == ["goal", "max_llm_calls"]
+    assert set(t["parameters"]["properties"]) == {
+        "goal", "max_llm_calls", "guidance", "coverage", "provider", "model",
+        "reasoning_effort",
+    }
+    assert t["invocation"] == {
+        "subcommand": "run-goal",
+        "positional": ["goal", "max_llm_calls"],
+        "options": ["guidance", "coverage", "provider", "model", "reasoning_effort"],
+    }
+
+
 def test_agent_tools_cli_json(capsys):
     rc = cli_main.main(["agent-tools", "--json"])
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
-    assert "tools" in out and len(out["tools"]) == 11
+    assert "tools" in out and len(out["tools"]) == 15
 
 
 def test_agent_tools_cli_human(capsys):
@@ -392,3 +464,17 @@ def test_cancel_run_without_yes_stdin_n_aborts(fake_http, monkeypatch, capsys):
     assert "aborted" in out
     # no POST should have been made
     assert not any("/cancel" in c[1] for c in fh.calls)
+
+
+def test_search_exclude_generated_top_level_flag(fake_http):
+    fh = fake_http({"/query": {"hits": []}})
+    cli_main.main(["--exclude-generated", "search", "aerospace", "q", "--json"])
+    _, _, body = fh.calls[0]
+    assert body["include_generated"] is False
+
+
+def test_search_default_includes_generated(fake_http):
+    fh = fake_http({"/query": {"hits": []}})
+    cli_main.main(["search", "aerospace", "q", "--json"])
+    _, _, body = fh.calls[0]
+    assert "include_generated" not in body        # query default True

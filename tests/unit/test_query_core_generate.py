@@ -27,7 +27,8 @@ def _settings():
 def test_generate_retrieves_augments_and_calls_llm(monkeypatch):
     captured = {}
 
-    def fake_complete(messages, provider, model, settings, stream=False):
+    def fake_complete(messages, provider, model, settings, stream=False,
+                      reasoning_effort=None):
         captured["messages"] = messages
         captured["provider"] = provider
         captured["model"] = model
@@ -52,7 +53,8 @@ def test_generate_retrieves_augments_and_calls_llm(monkeypatch):
 def test_generate_passes_template_and_stream(monkeypatch):
     captured = {}
     monkeypatch.setattr(query_core.llm, "complete",
-                        lambda messages, provider, model, settings, stream=False:
+                        lambda messages, provider, model, settings, stream=False,
+                        reasoning_effort=None:
                         captured.update(messages=messages, stream=stream))
     corpus = _FakeCorpus([_hit("ctx")])
     query_core.generate(corpus, [{"role": "user", "content": "q"}],

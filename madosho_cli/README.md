@@ -108,3 +108,110 @@ Under `--json`:
 Any application that ships a CLI emitting a compatible `agent-tools` manifest and
 accepting `--json` subcommands can be driven by the same research agent. That is
 the reuse contract, in place of MCP.
+
+## alchemy (autonomous goals)
+
+Standing, named goals that run autonomously over a corpus and produce
+versioned, exportable drafts. CLI-only in this release (not on MCP/toolserver).
+
+```
+madosho-cli alchemy create <name> --corpus NAME --goal TEXT [--coverage search|full|exhaustive] [--json]
+madosho-cli alchemy run <ref> [--provider P --model M] [--coverage search|full|exhaustive]
+            [--guidance TEXT] [--based-on N] [--fresh-coverage]
+            [--reasoning-effort WORD] [--max-llm-calls N] [--concurrency N] [--no-wait] [--json]
+madosho-cli alchemy status <ref> [--run VERSION] [--json]
+madosho-cli alchemy export <ref> [--run VERSION] [-o FILE]
+madosho-cli alchemy finalize <ref> --run VERSION [--json]
+madosho-cli alchemy list [--json]
+madosho-cli alchemy runs <ref> [--json]
+madosho-cli alchemy cancel <run_id> [--json]
+```
+
+- `<ref>` is a goal's name or numeric id (`--corpus` on `create` is always a
+  **name**, resolved the same way as `list-documents`/`upload-document`).
+- `run` blocks until the run reaches a terminal status (`done`/`failed`/
+  `cancelled`), printing progress lines, and exits non-zero on `failed` -
+  pass `--no-wait` to return immediately with the pending run and poll
+  yourself with `status`. `--based-on` picks which prior version to revise;
+  default is the goal's latest version that has a draft.
+- `run` uses the server's **default LLM endpoint** when `--provider`/`--model`
+  are omitted (pass both to pick a specific one; passing only one is an
+  error). `--concurrency N` runs up to N work units in parallel (1-8,
+  default 1); sections of a report goal are the units that parallelize.
+- `--reasoning-effort` sends a model-native effort word (e.g. `low`/`high`);
+  omitted, the run inherits the endpoint's own default.
+- `export`/`status` default `--run` to the goal's latest run if omitted.
+- `finalize` marks one version as the goal's canonical output (clears any
+  prior final version on that goal).
+
+Coverage is what the run GUARANTEES it did with the corpus before writing,
+enforced mechanically and reported honestly in `alchemy status`:
+
+- `search` (default) - the agent searches as it sees fit; the status reports
+  how many documents were actually consulted, e.g. "consulted 6 of 14 docs".
+- `full` - every document is consulted at least once: any document the
+  agent's own searches missed gets a forced retrieval pass, and its evidence
+  is folded into the weakest sections.
+- `exhaustive` - every document is read whole (in slices) and mined against
+  the report's sections before writing; retrieval only supplements.
+
+Reruns inherit the revision chain's coverage: a v2 does not re-consult
+documents v1 already covered unless you pass `--fresh-coverage`. If a cap
+stops coverage early the status says so, e.g.
+"coverage full: consulted 11/14 docs (llm call cap)".
+
+Worked example:
+
+```
+madosho-cli alchemy create find_vuln --corpus secdocs --goal "map every vulnerability discussed"
+madosho-cli alchemy run find_vuln --provider openai --model gpt-4o-mini
+madosho-cli alchemy export find_vuln            # -> find_vuln-v1.md
+madosho-cli alchemy run find_vuln --provider openai --model gpt-4o-mini \
+    --guidance "dig into the 2024 incidents"    # -> v2, revises v1
+madosho-cli alchemy finalize find_vuln --run 2
+```
+
+### Report goals (stage B)
+
+A `report` goal fills a markdown template section by section. Author a
+template - an optional `# Title`, optional intro prose (becomes the goal
+statement), then one `## Heading` per section with its instructions
+underneath:
+
+```markdown
+# Vulnerability report
+
+Assess the corpus for security problems.
+
+## Summary
+
+One paragraph for a busy reader.
+
+## June incidents
+
+Dig into the maintenance logs; list each incident with dates.
+```
+
+```bash
+madosho-cli alchemy create vuln_report --corpus secdocs \
+    --type report --spec vuln-report.md
+madosho-cli alchemy run vuln_report --provider openai --model gpt-4o \
+    --max-llm-calls 20
+madosho-cli alchemy status vuln_report    # per-section confidence table
+madosho-cli alchemy export vuln_report    # assembled markdown draft
+```
+
+Each section runs as its own bounded work unit; `--max-llm-calls` caps the
+WHOLE run (units share the allowance). A capped run still lands a draft -
+unfilled sections say so in the export, and `stop_reason` reads `call_cap`.
+If a section's unit crashes, the run halts with `stop_reason` `failed` but
+every section that already landed is kept, and the run's `error` names the
+failing section. On a rerun (revising a prior version), any section that ends
+unfilled this time - starved by the cap, cancelled, crashed, or empty - falls
+back to the prior run's text for that section if it had any, noted as
+"carried from prior, not revised: ..."; a rerun can only improve a report,
+never regress a section it once filled.
+
+Per-section confidence is the model's self-grade capped by citation facts
+(a section citing one document never reads `high`), always reported with
+the numbers behind it.

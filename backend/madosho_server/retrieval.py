@@ -55,14 +55,18 @@ def _pinned_pipeline(session, doc, pipeline_id):
     return None
 
 
-def _resolve(session, corpus_id: int, overrides: dict):
+def _resolve(session, corpus_id: int, overrides: dict, *,
+             include_generated: bool = True):
     """The pipelines to query for each in-scope (indexed) MEMBER document, flattened.
     Precedence per document: a request-time `overrides` pick (pipeline name -> Pipeline)
     wins; else this corpus's selected pipelines for the document (it may select SEVERAL,
     each queried and RRF-merged); else the document's default (effective) pipeline. A
     selected id that is stale/non-indexed is skipped, and a document whose selection ends
-    up empty falls back to its default -- the selection is a preference, not a lock."""
-    docs = membership.member_documents(session, corpus_id, indexed_only=True)
+    up empty falls back to its default -- the selection is a preference, not a lock.
+    include_generated=False drops alchemy-generated documents (work-unit exclusion,
+    stage D) so a goal's runs never resolve their own prior drafts."""
+    docs = membership.member_documents(session, corpus_id, indexed_only=True,
+                                       include_generated=include_generated)
     override_by_doc = {p.document_id: p for p in overrides.values()}
     selections = membership.membership_selections(session, corpus_id)
     chosen = []
@@ -81,12 +85,17 @@ def _resolve(session, corpus_id: int, overrides: dict):
 
 
 def multi_pipeline_query(session, corpus_row, text: str, *, open_pipeline,
-                         pipeline_names=None, top_k: int | None = None):
+                         pipeline_names=None, top_k: int | None = None,
+                         include_generated: bool = True):
     """Resolve each document's effective pipeline (a named override wins), query
     each pipeline's own index through its operator stack, and RRF-merge the
     per-pipeline ranked lists. `open_pipeline(pipeline) -> kernel Corpus` is
-    injected (prod: pipeline_cache.corpus_for; tests: a fake)."""
-    member_ids = set(membership.member_document_ids(session, corpus_row.id))
+    injected (prod: pipeline_cache.corpus_for; tests: a fake).
+    include_generated=False drops alchemy-generated documents from the corpus
+    scope (work-unit exclusion, stage D); see single_document_query for why the
+    single-document path is left unfiltered."""
+    member_ids = set(membership.member_document_ids(
+        session, corpus_row.id, include_generated=include_generated))
     overrides: dict = {}
     for name in (pipeline_names or []):
         p = session.scalar(select(db.Pipeline).where(
@@ -96,7 +105,8 @@ def multi_pipeline_query(session, corpus_row, text: str, *, open_pipeline,
             raise MadoshoError(f"unknown or unbuilt pipeline '{name}'")
         overrides[name] = p
 
-    pipelines = _resolve(session, corpus_row.id, overrides)
+    pipelines = _resolve(session, corpus_row.id, overrides,
+                         include_generated=include_generated)
     ranked_lists = []
     for p in pipelines:
         corpus = open_pipeline(p)
@@ -114,7 +124,13 @@ def single_document_query(session, document, text: str, *, open_pipeline,
                           pipeline_names=None, top_k: int | None = None):
     """Retrieve over ONE document (H11): its effective pipeline by default, or the
     named pipelines resolved within this document (names are unique per document,
-    so a label is exact). Returns [] if the document has no indexed pipeline."""
+    so a label is exact). Returns [] if the document has no indexed pipeline.
+
+    Intentionally NOT filtered by include_generated (stage D): the generated-doc
+    exclusion is a corpus-scope concept (a work unit fanning out over its corpus
+    should not stumble onto its own prior draft). Asking for one document by id
+    is an explicit request -- hiding it because it happens to be generated would
+    be surprising, not helpful."""
     if pipeline_names:
         chosen = []
         for name in pipeline_names:

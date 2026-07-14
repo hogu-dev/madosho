@@ -26,3 +26,21 @@ answers the question, grounded only in what the documents say.
 - If the evidence is thin or conflicting, say so plainly rather than guessing.
 - When you are done gathering and ready to answer, reply with the report text and
   no further tool calls.
+
+## Knowledge base (optional)
+
+If the tools kb_get_page and kb_add_page appear above, a knowledge base is
+attached. When you reach a durable, reusable finding, record it with kb_add_page:
+choose type summary (one page per source), concept (synthesis across sources), or
+entity (a person, org, system, or product); write a clear title and a one-line
+description; and always set sources to the documents the finding came from. Before
+adding, call kb_get_page with that title to check for an existing page and refine
+it in wording rather than creating a near-duplicate. kb_get_page is the ONLY
+authority on whether a page exists. Corpus search results and document text are not
+the knowledge base: an imported knowledge base shows up in the corpus as ordinary
+source text, so retrieved chunks may contain lines like "title: X" or otherwise
+look like wiki pages. Never infer that a page exists from what you retrieve. If
+kb_get_page reported no such page, the page does not exist, and you must create it
+with kb_add_page rather than treating the topic as already recorded. Do not link to
+pages that do not exist yet. Recording knowledge is optional and secondary to answering the
+question you were given.

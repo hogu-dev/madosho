@@ -286,9 +286,21 @@ corpora, upload, build pipelines over HTTP): `docs/HEADLESS.md`.
 
 ## Install
 
-Not yet on PyPI; install from source (Python >= 3.11):
+madosho ships as three PyPI packages so you install only what you need:
+
+| Package | `pip install ...` | Use it when you want to... |
+|---|---|---|
+| **madosho-cli** | `madosho-cli` | drive a running madosho from the shell or an agent (zero dependencies) |
+| **madosho-mcp** | `madosho-mcp` | expose a madosho corpus to an MCP host (Claude Desktop, IDEs, agents) |
+| **madosho** | `madosho[server]` | run the full server/framework yourself |
+
+`madosho-cli` and `madosho-mcp` are lightweight HTTP clients - no server, no Postgres,
+no model stack. The server package pulls `madosho-cli` in automatically.
+
+To run the full server or develop from source (Python >= 3.11):
 
 ```bash
+pip install ./packaging/madosho-cli   # the client dep; only a 0.0.1 placeholder is on PyPI so far
 pip install -e ".[local]"
 ```
 
@@ -304,13 +316,17 @@ install only what your pipeline uses:
 | `qdrant` | qdrant-client | `qdrant` store (server; in-process local mode for tests) |
 | `server` | fastapi, uvicorn, sqlalchemy, psycopg, procrastinate, any-llm-sdk, python-multipart | the service platform (control + query planes + worker) |
 | `research` | any-llm-sdk | the standalone `research_agent` package |
-| `mcp` | mcp>=1.8,<2 | the MCP server (`madosho-mcp`) |
 | `local` | all of `docling`, `lancedb`, `models` | the default library pipeline |
 | `dev` | pytest, fpdf2, build, packaging, testcontainers, httpx, openai | running the test suite |
 
 Core itself depends only on `pydantic` and `pyyaml`. Dependency floors are
 **tested floors** -- the suite runs against every declared minimum (enforced by
 `tests/unit/test_scaffold.py`).
+
+> **Dev layout:** `madosho_cli/` and `madosho_mcp/` stay at the repo root; their
+> standalone PyPI build configs live under `packaging/`. The test suite imports every
+> package straight from the source tree (`pythonpath` in `pyproject.toml`), so a plain
+> `pytest` run needs no editable install of the split-out clients.
 
 ## How it works
 
@@ -431,6 +447,53 @@ The document library - each source indexed once, then shared across any number
 of corpora:
 
 ![The document library](docs/img/documents.png)
+
+## Autonomous agents: Research and Alchemy
+
+madosho drives its retrieval core with two agentic surfaces. Both produce cited
+reports over a corpus, and both run on the same standalone research engine
+(`research_agent`, which imports nothing from madosho) - Alchemy is built on top
+of it.
+
+**Research** answers a single question. Give it a prompt, the documents to draw
+on, and a round/character budget; it runs several retrieval rounds and returns
+one cited report. It is stateless and one-shot - fire it and read the result.
+
+**Alchemy** pursues a durable goal. A goal is named, versioned, and structured:
+each run is a new version that can revise the last, and the agent keeps a ledger
+of how much of the corpus it actually consulted. Reach for it when you have a
+standing objective an agent should build up and keep current, not a one-off
+question.
+
+| | Research | Alchemy |
+|---|----------|---------|
+| Lifespan | one-shot run | a named goal that persists |
+| Iteration | independent runs | versioned - a run revises the prior draft |
+| Steering | re-type the prompt | per-run guidance to correct or refocus |
+| Structure | freeform report | `living-research` (freeform) or `report` (one section per markdown heading, each with a confidence rating) |
+| Coverage | N retrieval rounds | coverage modes (search / full / exhaustive) plus a ledger of which docs were consulted, complete vs incomplete |
+| Scale | single agent loop | optional concurrency - parallel section slices |
+| Output | read or download | finalize a version, and optionally ingest it back into the corpus as a generated document |
+
+Alchemy goals are created from the CLI or the workbench's Alchemy page (a
+New-goal form); runs launch from either. A run view shows the coverage ledger,
+per-section confidence, an activity trace of every tool call the agent made, the
+rendered draft, and its citations.
+
+```console
+$ madosho alchemy create energy-brief --corpus biology --type living-research \
+    --goal "Summarize how photosynthesis stores energy, using only the corpus."
+$ madosho alchemy run energy-brief --provider openai --model your-model
+
+# How photosynthesis stores energy
+Photosynthesis stores energy by converting light energy into chemical energy
+stored in glucose [smoke-kb.md]. The Calvin cycle fixes carbon dioxide into
+sugar [smoke-kb.md]. ...
+```
+
+Both surfaces are headless too: `madosho alchemy ...` and the same tools over the
+agent manifest. Retrieval and citations work without an LLM; the generated draft
+needs one wired (see Quickstart).
 
 ## Bundled components
 
@@ -631,6 +694,12 @@ picks are the smaller Granite, gpt-oss-20B, Qwen3, and Gemma 4 rows.
   anything reliable.
 - **Dead client method:** `setRatingsConfig()` exists in the API client but
   nothing in the UI calls it.
+- **Agent runs over large corpora are slow on CPU.** Research and Alchemy fire
+  many retrieval rounds, and every search reranks its candidates; with the
+  default reranker on CPU, a search over a large-document corpus can take tens of
+  seconds, so a multi-round run may take many minutes (small corpora search in a
+  few seconds). Point retrieval at a GPU endpoint, use a lighter or rerank-free
+  pipeline, or scope the agent to a smaller corpus.
 
 ## Roadmap (high level)
 
@@ -639,8 +708,9 @@ picks are the smaller Granite, gpt-oss-20B, Qwen3, and Gemma 4 rows.
   never need to clone this repo.
 - **Cross-corpus search:** an agent tool that searches all corpora in one call
   (today's query plane requires picking one corpus or document).
-- **Autonomous reporting and analysis** on top of the research agent -- the
-  orchestration groundwork is laid; the output spec is the remaining piece.
+- **More Alchemy goal types.** The autonomous-goals engine has shipped (see
+  "Autonomous agents: Research and Alchemy"); planned next are richer goal shapes
+  on top of it, such as a wiki goal that maintains many linked pages.
 - **HTTPS/TLS:** an opt-in Caddy overlay ships in `examples/tls/` (local-CA
   certificates for LAN setups, Let's Encrypt for public domains). Still to
   come: native TLS flags on the services themselves for proxy-free

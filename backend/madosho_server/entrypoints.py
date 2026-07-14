@@ -43,7 +43,7 @@ def make_worker_app() -> procrastinate.App:
     return tasks.app
 
 
-_DEFAULT_QUEUES = ["ingest", "ratings", "eval", "research"]
+_DEFAULT_QUEUES = ["ingest", "ratings", "eval", "research", "alchemy"]
 
 
 def worker_queues() -> list[str]:

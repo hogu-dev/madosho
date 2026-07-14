@@ -47,8 +47,15 @@ test("Jobs nav item shows a live count badge while builds run, and none when idl
 test("Jobs nav item has no badge when nothing is building", () => {
   jobsMock.count = 0;
   at("/documents", <Sidebar />);
-  // the only digits in the sidebar would be a badge; none expected at idle
-  expect(screen.getByRole("link", { name: /^jobs$/i })).toBeInTheDocument();
+  // a badge would be the only digit in the item; at idle there is none
+  const jobs = screen.getByRole("link", { name: /jobs/i });
+  expect(jobs.textContent).not.toMatch(/\d/);
+});
+
+test("nav items carry a plain-language descriptor subtitle", () => {
+  at("/documents", <Sidebar />);
+  expect(screen.getByText("Autonomous multi-agent")).toBeInTheDocument();
+  expect(screen.getByText("Query & cited answer")).toBeInTheDocument();
 });
 
 test("NavItem renders an optional badge", () => {

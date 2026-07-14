@@ -22,6 +22,12 @@ from .llm import LlmClient
 from .tools import ToolProvider, render_manifest, to_openai_tools
 from .types import Citation, Report, RunBudget
 
+# How much of each model turn's prose to keep in the run_log for the live
+# activity console. Interim reasoning is usually short; the final report is
+# shown in full via the draft, so a bounded preview here keeps the persisted
+# run_log from bloating while still surfacing what the model is "saying".
+_LLM_TEXT_PREVIEW = 600
+
 
 def _citations_from(name: str, data) -> list[Citation]:
     out: list[Citation] = []
@@ -70,7 +76,21 @@ def _dedupe(cits: list[Citation]) -> list[Citation]:
 
 def run_loop(prompt: str, autonomous_md: str, tools: ToolProvider,
              llm: LlmClient, budget: RunBudget, *,
-             should_cancel: Callable[[], bool] | None = None) -> Report:
+             should_cancel: Callable[[], bool] | None = None,
+             on_event: Callable[[dict], None] | None = None) -> Report:
+    # on_event, when given, is called with each run_log entry the moment it is
+    # appended - the seam a live activity console taps to stream tool calls and
+    # model turns while the run is still in flight (the returned Report carries
+    # the same entries in full at the end). It is best-effort: a raising sink
+    # never breaks the loop.
+    def _log(entry: dict) -> None:
+        run_log.append(entry)
+        if on_event is not None:
+            try:
+                on_event(entry)
+            except Exception:
+                pass
+
     specs = tools.manifest()
     tool_schemas = to_openai_tools(specs)
     system = autonomous_md + "\n\n## Tools available\n" + render_manifest(specs)
@@ -90,9 +110,10 @@ def run_loop(prompt: str, autonomous_md: str, tools: ToolProvider,
             return Report(markdown=final_text, citations=_dedupe(citations),
                           run_log=run_log, stop_reason="cancelled")
         turn = llm.complete(messages, tool_schemas)
-        run_log.append({"round": round_no, "kind": "llm",
-                        "has_tool_calls": bool(turn.tool_calls),
-                        "text_chars": len(turn.text or "")})
+        _log({"round": round_no, "kind": "llm",
+              "has_tool_calls": bool(turn.tool_calls),
+              "text_chars": len(turn.text or ""),
+              "text": (turn.text or "")[:_LLM_TEXT_PREVIEW]})
         if not turn.tool_calls:
             if turn.text:
                 final_text = turn.text
@@ -135,9 +156,9 @@ def run_loop(prompt: str, autonomous_md: str, tools: ToolProvider,
                     payload = payload[:remaining]
                     note = "truncated to fit context budget"
             chars_used += len(payload)
-            run_log.append({"round": round_no, "kind": "tool_call", "name": tc.name,
-                            "args": tc.arguments, "ok": result.ok, "error": result.error,
-                            "chars": len(payload), "note": note})
+            _log({"round": round_no, "kind": "tool_call", "name": tc.name,
+                  "args": tc.arguments, "ok": result.ok, "error": result.error,
+                  "chars": len(payload), "note": note})
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": payload})
 
     if not got_final:
@@ -145,8 +166,9 @@ def run_loop(prompt: str, autonomous_md: str, tools: ToolProvider,
                          "You have reached the research round limit. Write the final "
                          "report now from the evidence you have gathered."})
         turn = llm.complete(messages, [])
-        run_log.append({"round": budget.max_rounds + 1, "kind": "llm",
-                        "has_tool_calls": False, "text_chars": len(turn.text or "")})
+        _log({"round": budget.max_rounds + 1, "kind": "llm",
+              "has_tool_calls": False, "text_chars": len(turn.text or ""),
+              "text": (turn.text or "")[:_LLM_TEXT_PREVIEW]})
         final_text = turn.text or ""
         stop_reason = "round_cap"
 

@@ -46,3 +46,21 @@ test("an unknown path renders the 404 inside the shell", () => {
   expect(screen.getByText("404")).toBeInTheDocument();
   expect(screen.getByText("madosho")).toBeInTheDocument(); // still framed by the shell
 });
+
+test("registers the alchemy surfaces (goals list, goal detail, run viewer)", () => {
+  const paths = childPaths();
+  for (const p of ["alchemy", "alchemy/:goalRef", "alchemy/:goalRef/runs/:version"])
+    expect(paths).toContain(p);
+});
+
+test("the sidebar links to Alchemy and the breadcrumb labels it", async () => {
+  const router = createMemoryRouter(routes, { initialEntries: ["/alchemy"] });
+  render(<RouterProvider router={router} />);
+  // The nav link's accessible name now carries the descriptor subtitle
+  // ("Alchemy Autonomous multi-agent"), so match on the label prefix.
+  const link = await screen.findByRole("link", { name: /^Alchemy/ });
+  expect(link).toHaveAttribute("href", "/alchemy");
+  // Breadcrumbs renders as the page's only <nav>; without the CRUMB entry it
+  // would fall back to "Documents".
+  expect(screen.getByRole("navigation")).toHaveTextContent("Alchemy");
+});

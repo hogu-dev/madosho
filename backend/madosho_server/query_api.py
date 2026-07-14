@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from madosho.core.errors import MadoshoError
 from madosho_server import db, llm, membership, pipeline_cache, pipelines as pipelines_mod, query_core, retrieval
 from madosho_server.auth import make_auth_dependency
-from madosho_server.llm_endpoints import endpoint_creds
+from madosho_server.llm_endpoints import endpoint_creds, endpoint_reasoning_effort
 from madosho_server.settings import Settings
 
 
@@ -53,17 +53,19 @@ def _open_pipeline(settings: Settings):
 
 
 def _resolve_answer_llm(session, settings, body_llm: str):
-    """Resolve the Answer LLM to (provider, model, settings). `body_llm` is a
-    registry endpoint NAME first (binds that endpoint's OWN api_base/key onto a
-    Settings copy); else the legacy 'provider:model' on global settings. Returns
-    None when body_llm resolves to neither."""
+    """Resolve the Answer LLM to (provider, model, settings, reasoning_effort).
+    `body_llm` is a registry endpoint NAME first (binds that endpoint's OWN
+    api_base/key onto a Settings copy, and carries its reasoning_effort default);
+    else the legacy 'provider:model' on global settings (effort looked up by
+    provider/model). Returns None when body_llm resolves to neither."""
     row = session.scalar(select(db.LlmEndpoint).where(db.LlmEndpoint.name == body_llm))
     if row is not None:
         creds = endpoint_creds(settings, row)
-        return row.provider, row.model, creds
+        return row.provider, row.model, creds, row.reasoning_effort
     provider, _, model = body_llm.partition(":")
     if provider and model:
-        return provider, model, settings
+        return (provider, model, settings,
+                endpoint_reasoning_effort(session, provider, model))
     return None
 
 
@@ -73,6 +75,7 @@ class QueryRequest(BaseModel):
     prompt: str
     llm: str | None = None          # "provider:model"
     pipelines: list[str] | None = None
+    include_generated: bool = True  # False hides alchemy-generated docs (work-unit exclusion)
 
 
 class Citation(BaseModel):
@@ -90,6 +93,7 @@ class Citation(BaseModel):
     position: int | None = None
     pipeline_id: int | None = None
     pipeline: str | None = None
+    origin: str | None = None    # provenance: "source" | "generated" (D-stage)
 
 
 class QueryHitsResponse(BaseModel):
@@ -173,22 +177,34 @@ def query(body: QueryRequest, session: SessionDep, settings: SettingsDep):
             row = _corpus_row_or_404(session, body.corpus)
             ph = retrieval.multi_pipeline_query(
                 session, row, body.prompt, open_pipeline=_open_pipeline(settings),
-                pipeline_names=body.pipelines)
+                pipeline_names=body.pipelines,
+                include_generated=body.include_generated)
     except MadoshoError as e:
         raise HTTPException(status_code=400, detail=str(e))
     hits = [p.hit for p in ph]   # bare Hit list for generation; ph kept for pipeline-attributed citations
+    # Provenance labels: ONE lookup over the distinct hit documents (not one per
+    # hit) mapping document_id -> (origin, origin_meta), so a generated doc's
+    # chunks render "[generated: <goal> v<n>]" in their citation.
+    doc_ids = {p.document_id for p in ph}
+    origins: dict[int, tuple[str, dict]] = {}
+    if doc_ids:
+        rows = session.execute(
+            select(db.Document.id, db.Document.origin, db.Document.origin_meta)
+            .where(db.Document.id.in_(doc_ids))).all()
+        origins = {i: (o, m or {}) for i, o, m in rows}
 
     if not body.llm:
-        return {"hits": query_core.serialize_pipeline_hits(ph)}
+        return {"hits": query_core.serialize_pipeline_hits(ph, origins=origins)}
 
     resolved = _resolve_answer_llm(session, settings, body.llm)
     if resolved is None:
         raise HTTPException(status_code=422, detail="llm must be an endpoint name or 'provider:model'")
-    provider, model, gen_settings = resolved
+    provider, model, gen_settings, effort = resolved
     user_messages = [{"role": "user", "content": body.prompt}]
     try:
         result, _ = query_core.generate_from_hits(
-            hits, user_messages, provider=provider, model=model, settings=gen_settings)
+            hits, user_messages, provider=provider, model=model, settings=gen_settings,
+            reasoning_effort=effort)
     except llm.ProviderNotConfigured as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -199,7 +215,7 @@ def query(body: QueryRequest, session: SessionDep, settings: SettingsDep):
     # uses internally with the same args, so this is identical — no drift.
     messages = query_core.augmented_messages(hits, user_messages)
     return {"answer": answer,
-            "citations": query_core.serialize_pipeline_hits(ph),
+            "citations": query_core.serialize_pipeline_hits(ph, origins=origins),
             "usage": usage, "messages": messages}
 
 
@@ -293,10 +309,12 @@ def chat_completions(body: ChatRequest, session: SessionDep, settings: SettingsD
         session, corpus_row, query_core.last_user_text(user_messages),
         open_pipeline=_open_pipeline(settings))
     hits = [p.hit for p in ph]
+    effort = endpoint_reasoning_effort(session, vm.provider, vm.model)
     try:
         result, _ = query_core.generate_from_hits(
             hits, user_messages, provider=vm.provider, model=vm.model,
-            settings=settings, template=vm.template, stream=body.stream)
+            settings=settings, template=vm.template, stream=body.stream,
+            reasoning_effort=effort)
     except llm.ProviderNotConfigured as e:
         return _openai_error(400, str(e))
     except Exception as e:  # upstream/provider failure (non-stream path)

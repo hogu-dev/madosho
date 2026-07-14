@@ -1,9 +1,9 @@
 from madosho_server.entrypoints import worker_queues
 
 
-def test_default_is_all_four_queues(monkeypatch):
+def test_default_is_all_default_queues(monkeypatch):
     monkeypatch.delenv("MADOSHO_WORKER_QUEUES", raising=False)
-    assert worker_queues() == ["ingest", "ratings", "eval", "research"]
+    assert worker_queues() == ["ingest", "ratings", "eval", "research", "alchemy"]
 
 
 def test_env_pins_a_subset(monkeypatch):
@@ -13,4 +13,4 @@ def test_env_pins_a_subset(monkeypatch):
 
 def test_blank_env_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("MADOSHO_WORKER_QUEUES", "  ")
-    assert worker_queues() == ["ingest", "ratings", "eval", "research"]
+    assert worker_queues() == ["ingest", "ratings", "eval", "research", "alchemy"]

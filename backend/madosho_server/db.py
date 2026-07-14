@@ -46,10 +46,24 @@ class Document(Base):
     # Pipeline.document_id and break create_all() on SQLite. Integrity is enforced
     # in application code (pipelines.effective_pipeline ignores stale/non-indexed ids).
     selected_pipeline_id: Mapped[int | None] = mapped_column(default=None)
+    # Provenance (stage D). "source" = a user/library upload; "generated" = a
+    # draft an alchemy run wrote and ingested back. origin_meta carries
+    # {goal, version, run_id} for a generated doc so the label can name it.
+    # Stamped ONCE at row creation (see api._ingest_bytes); never mutated on a
+    # dedupe hit (first-writer-wins).
+    origin: Mapped[str] = mapped_column(String(16), default="source")
+    origin_meta: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)
     # Liveness signal for the stalled-job sweeper: updated by the progress reporter
     # on every write, so a live job is never swept; a SIGKILLed job stops writing,
     # this freezes, and the sweeper fails it past ceiling + grace.
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    @property
+    def origin_label(self) -> str:
+        """The provenance suffix for this document ('' for source docs)."""
+        # Lazy import keeps db.py import-light and dependency-free at module load.
+        from madosho_server.provenance import origin_label as _label
+        return _label(self.origin, self.origin_meta)
 
 
 class Pipeline(Base):
@@ -139,6 +153,21 @@ class LlmEndpoint(Base):
     # "responses" (OpenAI's newer Responses API). Some frontier-model proxies
     # only handle multimodal input on the responses surface.
     api_flavor: Mapped[str] = mapped_column(String(16), default="chat")
+    # Per-model context metadata (stage D). Both nullable/optional: a row that
+    # does not set them behaves exactly as before. source_chars_budget is the
+    # max source characters a work unit should feed THIS model (its real usable
+    # window, e.g. Granite 4.1 chokes above ~16k chars even though ctx is 8192);
+    # context_window_tokens is the raw ctx for display/future sizing. The
+    # alchemy adapter reads source_chars_budget via endpoint_budget() to size a
+    # run's budget to the model actually assigned.
+    context_window_tokens: Mapped[int | None] = mapped_column(default=None)
+    source_chars_budget: Mapped[int | None] = mapped_column(default=None)
+    # Opaque, nullable, model-native reasoning-effort string (e.g. "low",
+    # "high", or a provider-specific word). NULL = unset -> madosho sends no
+    # effort signal and any_llm's default applies. Applies to EVERY LLM path
+    # this endpoint feeds (query/indexing/vision), and is the fallback default
+    # under a per-job override for alchemy/research runs.
+    reasoning_effort: Mapped[str | None] = mapped_column(String(32), default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now())
 
@@ -274,6 +303,74 @@ class ResearchRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
 
+class AlchemyGoal(Base):
+    """A standing, named autonomous goal over a corpus. The user refers to it
+    by name (like documents/pipelines); runs version under it. spec is the raw
+    authored format (stage A: {"goal": "..."}), compiled to sections by the
+    alchemy package at run time."""
+    __tablename__ = "alchemy_goal"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    corpus_id: Mapped[int] = mapped_column(ForeignKey("corpus.id"), index=True)
+    goal_type: Mapped[str] = mapped_column(String(32))   # living-research (stage A); report (stage B)
+    spec: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)
+    coverage: Mapped[str] = mapped_column(String(16), default="search")  # search (stage A); full|exhaustive later
+    # Work-unit exclusion (stage D): a goal's runs EXCLUDE generated docs by
+    # default so a run never cites its own prior drafts. Opt in to let runs see
+    # generated material (e.g. a meta-report over prior reports).
+    include_generated: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AlchemyRun(Base):
+    """One attempt to fill a goal, versioned WITHIN the goal (v1, v2, ...).
+    based_on_version records which prior version a guidance rerun revised.
+    usage is the token/call accounting dict (alchemy.Usage as a dict)."""
+    __tablename__ = "alchemy_run"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    goal_id: Mapped[int] = mapped_column(ForeignKey("alchemy_goal.id"), index=True)
+    version: Mapped[int] = mapped_column(default=1)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|done|failed|cancelled
+    coverage: Mapped[str] = mapped_column(String(16), default="search")
+    guidance: Mapped[str | None] = mapped_column(Text, default=None)
+    based_on_version: Mapped[int | None] = mapped_column(default=None)
+    progress: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)      # {phase}
+    draft_markdown: Mapped[str | None] = mapped_column(Text, default=None)
+    citations: Mapped[list] = mapped_column(JSON_TYPE, default=list)
+    run_log: Mapped[list] = mapped_column(JSON_TYPE, default=list)
+    sections: Mapped[list] = mapped_column(JSON_TYPE, default=list)          # per-section results (report goals): [{key,title,content,filled,note,confidence,stop_reason,llm_calls}]
+    usage: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)         # {llm_calls, prompt_tokens, completion_tokens, total_tokens}
+    ledger: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)         # coverage ledger dict (stage C): {mode,total_docs,consulted,from_prior,unconsulted,failures,complete,shortfall,summary}
+    stop_reason: Mapped[str | None] = mapped_column(String(16), default=None)
+    is_final: Mapped[bool] = mapped_column(default=False)
+    config: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)        # {llm, budget_chars, max_rounds, max_llm_calls, fresh_coverage, concurrency}
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+
+class AlchemyArtifact(Base):
+    """A stage artifact produced by an alchemy run - a handoff note (a unit hit
+    the round cap and a continuation resumed it) or a mining digest (one per doc
+    read under exhaustive coverage). First-class rows so a run's intermediate
+    work is inspectable, not buried in run_log. document_id is nullable and stays
+    None in stage D; it points at the generated document an artifact later becomes
+    once digest indexing (corpus memory) is turned on - deferred, same ingest-back
+    path. payload holds the kind-specific dict the engine emitted verbatim."""
+    __tablename__ = "alchemy_artifact"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("alchemy_run.id"), index=True)
+    goal_id: Mapped[int] = mapped_column(ForeignKey("alchemy_goal.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))          # handoff | digest (engine); ingest (adapter, Task 11)
+    key: Mapped[str] = mapped_column(String(200))          # stable slug within a run
+    document_id: Mapped[int | None] = mapped_column(default=None)  # generated doc, if indexed (Rung 3, later)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 # Engine/session are process globals, configured once at startup (or per test).
 engine = None
 SessionLocal = None
@@ -327,6 +424,21 @@ def _ensure_added_columns() -> None:
         conn.execute(text(
             "ALTER TABLE llm_endpoint ADD COLUMN IF NOT EXISTS "
             "api_flavor VARCHAR(16) NOT NULL DEFAULT 'chat'"))
+        # Stage D per-model budget metadata. Nullable with no default: an
+        # existing row simply has NULL until an operator fills it in on the
+        # Settings page, and NULL means "no per-model budget -> fall back to the
+        # run config" in endpoint_budget()/alchemy_exec.
+        conn.execute(text(
+            "ALTER TABLE llm_endpoint ADD COLUMN IF NOT EXISTS "
+            "context_window_tokens INTEGER"))
+        conn.execute(text(
+            "ALTER TABLE llm_endpoint ADD COLUMN IF NOT EXISTS "
+            "source_chars_budget INTEGER"))
+        # Reasoning-effort default (nullable string, no default): existing rows
+        # stay NULL = unset until an operator sets one on the Settings page.
+        conn.execute(text(
+            "ALTER TABLE llm_endpoint ADD COLUMN IF NOT EXISTS "
+            "reasoning_effort VARCHAR(32)"))
         conn.execute(text(
             "ALTER TABLE document_corpus ADD COLUMN IF NOT EXISTS pipeline_id INTEGER"))
         # Carry existing single pins forward into the multi-select table (idempotent):
@@ -347,6 +459,23 @@ def _ensure_added_columns() -> None:
         conn.execute(text(
             "ALTER TABLE pipeline ADD COLUMN IF NOT EXISTS "
             "updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now()"))
+        # Provenance columns (stage D). ADD COLUMN IF NOT EXISTS migrates a
+        # deployed Postgres in place; SQLite dev DBs get them via create_all.
+        conn.execute(text(
+            "ALTER TABLE document ADD COLUMN IF NOT EXISTS "
+            "origin VARCHAR(16) NOT NULL DEFAULT 'source'"))
+        conn.execute(text(
+            "ALTER TABLE document ADD COLUMN IF NOT EXISTS "
+            "origin_meta JSONB NOT NULL DEFAULT '{}'::jsonb"))
+        conn.execute(text(
+            "ALTER TABLE alchemy_run ADD COLUMN IF NOT EXISTS "
+            "sections JSONB NOT NULL DEFAULT '[]'::jsonb"))
+        conn.execute(text(
+            "ALTER TABLE alchemy_run ADD COLUMN IF NOT EXISTS "
+            "ledger JSONB NOT NULL DEFAULT '{}'::jsonb"))
+        conn.execute(text(
+            "ALTER TABLE alchemy_goal ADD COLUMN IF NOT EXISTS "
+            "include_generated BOOLEAN NOT NULL DEFAULT false"))
 
 
 def seed_llm_endpoints_from_env(settings) -> bool:

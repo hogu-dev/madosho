@@ -7,13 +7,16 @@ import json
 import logging
 import mimetypes
 import os
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Callable, Literal
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -22,7 +25,7 @@ from madosho.core.config import MadoshoConfig
 from madosho.core.errors import MadoshoError
 from madosho.core.meta import ComponentKind
 from madosho.core.registry import Registry
-from madosho_server import cube as cube_mod, db, extraction, membership, pipelines, tasks, textdiff
+from madosho_server import cube as cube_mod, db, extraction, llm_endpoints, membership, pipelines, tasks, textdiff
 from madosho_server import auth as auth_mod
 from madosho_server.auth import make_auth_dependency
 from madosho_server.components import list_components
@@ -107,6 +110,17 @@ def get_enqueue_research() -> Callable[[Session, int], None]:
     return transactional_enqueue_research
 
 
+def transactional_enqueue_alchemy(session: Session, alchemy_run_id: int) -> None:
+    """Defer the alchemy run on the session's own connection so the run row and
+    the job commit together (same discipline as research)."""
+    raw = session.connection().connection.driver_connection  # psycopg.Connection
+    tasks.run_alchemy.configure(connection=raw).defer(alchemy_run_id=alchemy_run_id)
+
+
+def get_enqueue_alchemy() -> Callable[[Session, int], None]:
+    return transactional_enqueue_alchemy
+
+
 def transactional_enqueue_build_pipeline(session: Session, pipeline_id: int) -> None:
     """Defer the per-pipeline build on the session's own connection so the pipeline
     row and the job commit together. Caller commits."""
@@ -141,7 +155,7 @@ DeleteEnqueueDep = Annotated[
 
 # ---- schemas -------------------------------------------------------------
 class CorpusCreate(BaseModel):
-    # same pattern the kernel's MadoshoConfig.corpus enforces — fail fast here
+    # same pattern the kernel's MadoshoConfig.corpus enforces - fail fast here
     name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -188,6 +202,8 @@ class DocumentRead(BaseModel):
     error: str | None = None
     progress: dict = {}   # live ingest feed: {phase, started_at, page_count, log:[{t,msg}]}
     selected_pipeline_id: int | None = None   # G: saved effective-pipeline override
+    origin: str = "source"        # "source" (upload) | "generated" (alchemy ingest-back)
+    origin_label: str = ""        # human suffix, e.g. "[generated: find_vuln v2]"; "" for source
 
 
 class CorpusChip(BaseModel):
@@ -210,6 +226,8 @@ class LibraryDocumentRead(BaseModel):
     rating: float | None = None
     error: str | None = None
     progress: dict = {}   # live build feed of the building pipeline while indexing
+    origin: str = "source"        # provenance (stage D), mirrors DocumentRead
+    origin_label: str = ""        # human suffix, e.g. "[generated: find_vuln v2]"
 
 
 class JobRead(BaseModel):
@@ -287,6 +305,25 @@ class VirtualModelRead(BaseModel):
     template: str | None
 
 
+def _normalize_reasoning_effort(v: object) -> str | None:
+    """Opaque effort string: trim, treat empty/whitespace-only as unset (None),
+    reject anything over 32 chars (defensive - real values are short words).
+    No enum: any short model-native token is accepted."""
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        raise ValueError("reasoning_effort must be a string")
+    v = v.strip()
+    if not v:
+        return None
+    if len(v) > 32:
+        raise ValueError("reasoning_effort must be at most 32 characters")
+    return v
+
+
+ReasoningEffort = Annotated[str | None, BeforeValidator(_normalize_reasoning_effort)]
+
+
 class LlmEndpointCreate(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
     name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._@ -]*$")
@@ -299,6 +336,12 @@ class LlmEndpointCreate(BaseModel):
     # "chat" = Chat Completions (default; what local servers speak);
     # "responses" = OpenAI Responses API (some frontier proxies need it for images)
     api_flavor: Literal["chat", "responses"] = "chat"
+    # Optional per-model budget metadata (stage D). ge=1 rejects zero/negative
+    # budgets at the edge; None means "unset -> the run config decides".
+    context_window_tokens: int | None = Field(default=None, ge=1)
+    source_chars_budget: int | None = Field(default=None, ge=1)
+    # Opaque model-native reasoning-effort default; None/blank = unset.
+    reasoning_effort: ReasoningEffort = None
 
     @model_validator(mode="after")
     def _at_least_one_capability(self):
@@ -321,6 +364,16 @@ class LlmEndpointRead(BaseModel):
     supports_vision: bool
     is_vision_default: bool
     api_flavor: str
+    context_window_tokens: int | None
+    source_chars_budget: int | None
+    reasoning_effort: str | None
+
+
+class EndpointModel(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    id: str                                 # the model name the upstream serves
+    reasoning_efforts: list[str]            # valid reasoning-effort levels ([] = none beyond default)
+    default_effort: str | None              # the model's own default effort, when it has a ladder
 
 
 SessionDep = Annotated[Session, Depends(db.get_session)]
@@ -329,6 +382,7 @@ EnqueueDep = Annotated[Callable[[Session, int], None], Depends(get_enqueue)]
 ComparisonEnqueueDep = Annotated[Callable[[Session, int], None], Depends(get_enqueue_comparison)]
 EvalEnqueueDep = Annotated[Callable[[Session, int], None], Depends(get_enqueue_eval)]
 ResearchEnqueueDep = Annotated[Callable[[Session, int], None], Depends(get_enqueue_research)]
+AlchemyEnqueueDep = Annotated[Callable[[Session, int], None], Depends(get_enqueue_alchemy)]
 
 
 class PipelineCreate(BaseModel):
@@ -372,6 +426,7 @@ class ResearchLaunch(BaseModel):
     budget_chars: int = 100_000
     max_rounds: int = 8
     llm: dict = Field(default_factory=dict)   # {"provider","model"}
+    reasoning_effort: ReasoningEffort = None  # per-job override; None -> endpoint default
 
 
 class StatusResponse(BaseModel):
@@ -605,6 +660,100 @@ class ResearchRunList(BaseModel):
     prompt: str
     config: dict | None = None
     stop_reason: str | None = None
+    error: str | None = None
+    created_at: str | None = None
+    finished_at: str | None = None
+
+
+class AlchemyGoalCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    corpus_id: int
+    goal_type: str = Field(default="living-research")
+    spec: dict
+    coverage: str = Field(default="search", pattern="^(search|full|exhaustive)$")
+    include_generated: bool = False
+
+
+class AlchemyGoalRead(BaseModel):
+    id: int
+    name: str
+    corpus_id: int
+    goal_type: str
+    spec: dict
+    coverage: str
+    include_generated: bool = False
+    created_at: str | None = None
+
+
+class AlchemyRunLaunch(BaseModel):
+    coverage: str | None = Field(default=None, pattern="^(search|full|exhaustive)$")  # defaults to the goal's coverage
+    guidance: str | None = None
+    based_on_version: int | None = None
+    fresh_coverage: bool = False                # rerun re-consults from scratch instead of inheriting the chain's ledger union
+    llm: dict = Field(default_factory=dict)     # {provider, model}; empty -> the server's default LLM endpoint
+    budget_chars: int = 100_000
+    max_rounds: int = 8
+    max_llm_calls: int | None = Field(default=None, ge=1)  # optional self-cap for rate-limited upstreams
+    concurrency: int = Field(default=1, ge=1, le=8)         # parallel work units per run (stage E); 1 = today's serial path
+    reasoning_effort: ReasoningEffort = None  # per-job override; None -> endpoint default
+
+
+class AlchemyFinalize(BaseModel):
+    version: int
+    ingest: bool = False        # also ingest the draft as a generated document
+
+
+class AlchemyIngest(BaseModel):
+    """Ingest a run's draft back as a generated library document.
+    corpus (by name) overrides the goal's own corpus as the target."""
+    corpus: str | None = None
+
+
+class AlchemyRunRead(BaseModel):
+    id: int
+    goal_id: int
+    version: int
+    status: str
+    coverage: str
+    guidance: str | None = None
+    based_on_version: int | None = None
+    progress: dict | None = None
+    stop_reason: str | None = None
+    usage: dict | None = None
+    is_final: bool = False
+    ingested_document_id: int | None = None   # set once a draft is ingested back
+    error: str | None = None
+    created_at: str | None = None
+    finished_at: str | None = None
+    draft_markdown: str | None = None           # only on the single-run GET
+    citations: list | None = None               # "
+    run_log: list | None = None                 # "
+    sections: list | None = None                # only on the single-run GET
+    ledger: dict | None = None                  # only on the single-run GET
+    artifact_counts: dict | None = None         # {kind: n} on the single-run GET
+
+
+class AlchemyArtifactRead(BaseModel):
+    id: int
+    kind: str
+    key: str
+    document_id: int | None = None
+    payload: dict | None = None
+    created_at: str | None = None
+
+
+class AlchemyRunList(BaseModel):
+    id: int
+    goal_id: int
+    version: int
+    status: str
+    coverage: str
+    guidance: str | None = None
+    based_on_version: int | None = None
+    stop_reason: str | None = None
+    usage: dict | None = None
+    is_final: bool = False
+    ingested_document_id: int | None = None   # set once a draft is ingested back
     error: str | None = None
     created_at: str | None = None
     finished_at: str | None = None
@@ -1092,7 +1241,8 @@ def list_library_documents(session: SessionDep):
         out.append(LibraryDocumentRead(
             id=doc.id, filename=doc.filename, status=doc.status,
             selected_pipeline_id=doc.selected_pipeline_id, corpora=chips, rating=rating,
-            error=doc.error, progress=progress))
+            error=doc.error, progress=progress,
+            origin=doc.origin, origin_label=doc.origin_label))
     return out
 
 
@@ -1142,7 +1292,8 @@ def _ingest_bytes(
         enqueue: Callable, enqueue_build: Callable, *,
         content: bytes, filename: str, mimetype: str, corpus_id: int | None,
         parser: str | None, chunker: str | None, embedder: str | None,
-        name: str | None, options: dict | None) -> db.Document:
+        name: str | None, options: dict | None,
+        origin: str = "source", origin_meta: dict | None = None) -> db.Document:
     """Store bytes by SHA-256, find-or-create the library document, create or
     reuse a named pipeline from the recipe, optionally attach a corpus
     membership, and return the document. Caller must commit.
@@ -1173,6 +1324,9 @@ def _ingest_bytes(
 
     existing = session.scalar(
         select(db.Document).where(db.Document.content_hash == digest))
+    # NOTE: origin is stamped only on FIRST creation below. An identical-bytes
+    # re-ingest lands here and keeps the existing row's origin as-is
+    # (first-writer-wins) - the same bytes are the same artifact.
     if existing is not None:
         before = session.scalar(select(db.Pipeline).where(
             db.Pipeline.document_id == existing.id, db.Pipeline.name == pname))
@@ -1186,7 +1340,8 @@ def _ingest_bytes(
         return existing
 
     doc = db.Document(filename=filename, content_hash=digest, file_uri=uri,
-                      mimetype=mimetype, status="received")
+                      mimetype=mimetype, status="received",
+                      origin=origin, origin_meta=origin_meta or {})
     session.add(doc)
     try:
         session.flush()                          # assign doc.id inside the txn
@@ -1261,6 +1416,93 @@ def ingest_document(body: DocumentIngest, session: SessionDep, settings: Setting
                          name=None, options=body.options)
 
 
+_KB_IMPORT_CAP = 50 * 1024 * 1024   # 50 MB, matching the inline-ingest cap
+
+
+def _kb_write_member(base: Path, relpath: str, data: bytes) -> None:
+    """Write one uploaded KB member under base, rejecting absolute paths and any
+    traversal so a crafted archive/upload cannot escape the temp dir (zip-slip)."""
+    rel = PurePosixPath(relpath.replace("\\", "/"))
+    if rel.is_absolute() or any(part in ("", "..") for part in rel.parts):
+        raise HTTPException(status_code=400, detail=f"unsafe path in upload: {relpath!r}")
+    dest = (base / rel)
+    base_r = base.resolve()
+    if not str(dest.resolve()).startswith(str(base_r) + os.sep):
+        raise HTTPException(status_code=400, detail=f"unsafe path in upload: {relpath!r}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+
+
+def _find_kb_root(base: Path) -> Path:
+    """The shallowest directory under base that holds a kb.yaml (a zip/folder may
+    or may not wrap the KB in a top-level dir). 400 if none is found."""
+    matches = sorted(base.rglob("kb.yaml"), key=lambda p: len(p.parts))
+    if not matches:
+        raise HTTPException(status_code=400,
+                            detail="no kb.yaml found - not a KB folder/archive")
+    return matches[0].parent
+
+
+@app.post("/documents/import-kb", response_model=DocumentRead, status_code=202)
+def import_kb(session: SessionDep, settings: SettingsDep,
+              enqueue: EnqueueDep, enqueue_build: BuildPipelineEnqueueDep,
+              archive: UploadFile | None = File(default=None),
+              files: list[UploadFile] = File(default=[]),
+              paths: list[str] = Form(default=[]),
+              corpus: str | None = Form(default=None)):
+    """Import an llmkb knowledge base through the web: pack a whole KB into one
+    madosho document (the same kb_pack the CLI's import-kb uses) and ingest it,
+    optionally into a corpus. The KB arrives EITHER as a single `.zip` (archive)
+    OR as the folder's files (`files` + parallel `paths`, e.g. from a directory
+    picker). Packing runs here because a browser can only send files, not a path."""
+    from madosho_cli import kb_pack   # server->cli import kept lazy, like alchemy.compile
+    corpus_id = _resolve_corpus_id_or_404(session, corpus) if corpus else None
+    if archive is None and not files:
+        raise HTTPException(status_code=400,
+                            detail="provide a KB: a .zip archive or the folder's files")
+    with tempfile.TemporaryDirectory(prefix="madosho-kb-") as tmp:
+        base = Path(tmp)
+        total = 0
+        if archive is not None:
+            raw = archive.file.read()
+            total += len(raw)
+            if total > _KB_IMPORT_CAP:
+                raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+            try:
+                zf = zipfile.ZipFile(io.BytesIO(raw))
+            except zipfile.BadZipFile:
+                raise HTTPException(status_code=400, detail="archive is not a valid .zip")
+            with zf:
+                for name in zf.namelist():
+                    if name.endswith("/"):
+                        continue
+                    data = zf.read(name)
+                    total += len(data)
+                    if total > _KB_IMPORT_CAP:
+                        raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+                    _kb_write_member(base, name, data)
+        else:
+            if len(files) != len(paths):
+                raise HTTPException(status_code=400,
+                                    detail="files and paths must line up one-to-one")
+            for f, rel in zip(files, paths):
+                data = f.file.read()
+                total += len(data)
+                if total > _KB_IMPORT_CAP:
+                    raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+                _kb_write_member(base, rel, data)
+        root = _find_kb_root(base)
+        try:
+            filename, content = kb_pack.pack_kb(root)
+        except kb_pack.KbPackError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return _ingest_bytes(session, settings, enqueue, enqueue_build,
+                         content=content.encode("utf-8"), filename=filename,
+                         mimetype="text/markdown", corpus_id=corpus_id,
+                         parser=None, chunker=None, embedder=None,
+                         name=None, options=None)
+
+
 @app.get("/documents/{document_id}", response_model=DocumentDetailRead)
 def get_document(document_id: int, session: SessionDep):
     doc = session.get(db.Document, document_id)
@@ -1271,6 +1513,7 @@ def get_document(document_id: int, session: SessionDep):
     return DocumentDetailRead(
         id=doc.id, filename=doc.filename, status=doc.status, error=doc.error,
         progress=doc.progress or {}, selected_pipeline_id=doc.selected_pipeline_id,
+        origin=doc.origin, origin_label=doc.origin_label,
         corpora=chips)
 
 
@@ -1655,7 +1898,7 @@ def get_pipeline_extract_diff(document_id: int, left: int, right: int, session: 
     """Extract-stage diff between two of this document's pipelines.
 
     Reads each pipeline's STORED artifacts (`pipeline.artifacts.blocks`) and diffs
-    them page-aligned — never a re-parse. Same word-level, whitespace-insensitive
+    them page-aligned - never a re-parse. Same word-level, whitespace-insensitive
     machinery as the legacy head-to-head (`textdiff.diff_spans`), so the page rail
     and Raw/Rendered viewer reuse the existing `ComparisonPage` shape unchanged;
     `engine_a`/`engine_b` are the two pipeline names rather than parser engines.
@@ -1775,6 +2018,99 @@ def _research_run_dict(run: "db.ResearchRun", with_report: bool = False) -> dict
     return out
 
 
+def _iso(dt):
+    return dt.isoformat() if dt is not None else None
+
+
+def _alchemy_goal_dict(g: "db.AlchemyGoal") -> dict:
+    return {"id": g.id, "name": g.name, "corpus_id": g.corpus_id,
+            "goal_type": g.goal_type, "spec": g.spec, "coverage": g.coverage,
+            "include_generated": g.include_generated,
+            "created_at": _iso(g.created_at)}
+
+
+def _alchemy_run_dict(r: "db.AlchemyRun", with_draft: bool = False) -> dict:
+    d = {"id": r.id, "goal_id": r.goal_id, "version": r.version,
+         "status": r.status, "coverage": r.coverage, "guidance": r.guidance,
+         "based_on_version": r.based_on_version, "progress": r.progress,
+         "stop_reason": r.stop_reason, "usage": r.usage, "is_final": r.is_final,
+         "ingested_document_id": (r.config or {}).get("ingested_document_id"),
+         "error": r.error, "created_at": _iso(r.created_at),
+         "finished_at": _iso(r.finished_at)}
+    if with_draft:
+        d.update(draft_markdown=r.draft_markdown, citations=r.citations,
+                 run_log=r.run_log, sections=r.sections, ledger=r.ledger)
+    return d
+
+
+def _alchemy_artifact_dict(a: "db.AlchemyArtifact") -> dict:
+    return {"id": a.id, "kind": a.kind, "key": a.key,
+            "document_id": a.document_id, "payload": a.payload,
+            "created_at": _iso(a.created_at)}
+
+
+def _resolve_goal(session, ref: str):
+    """A goal ref is its numeric id or its unique name."""
+    g = None
+    if ref.isdigit():
+        g = session.get(db.AlchemyGoal, int(ref))
+    if g is None:
+        g = session.scalars(select(db.AlchemyGoal)
+                            .where(db.AlchemyGoal.name == ref)).first()
+    return g
+
+
+def _ingest_run_draft(session, settings, enqueue, enqueue_build,
+                      goal, run, corpus_id) -> db.Document:
+    """Ingest a completed run's draft as a generated library document, record
+    the linkage, and return the document. Shared by the explicit ingest
+    endpoint and finalize's --ingest opt-in so the guard and the bookkeeping
+    cannot drift. Same 409 guard finalize uses: an unfinished or empty draft is
+    not a deliverable, so it is not ingestable either."""
+    if run.status != "done" or not (run.draft_markdown or "").strip():
+        raise HTTPException(
+            status_code=409,
+            detail="only a completed run with a draft can be ingested")
+    # origin_meta names the source run so every downstream hit/citation/row can
+    # render "[generated: <goal> v<version>]" (see provenance.origin_label).
+    doc = _ingest_bytes(
+        session, settings, enqueue, enqueue_build,
+        content=run.draft_markdown.encode("utf-8"),
+        filename=f"{goal.name}-v{run.version}.md",
+        mimetype="text/markdown", corpus_id=corpus_id,
+        parser=None, chunker=None, embedder=None, name=None, options=None,
+        origin="generated",
+        origin_meta={"goal": goal.name, "version": run.version, "run_id": run.id})
+    # Rung-2 artifact row: an inspectable record that this run produced a doc.
+    # (Digest indexing / corpus memory later reuses the same kind="ingest" shape.)
+    # _ingest_bytes dedupes the DOCUMENT by content hash, so re-ingesting the
+    # same run (calling this endpoint twice, or finalize --ingest after a
+    # standalone ingest) returns the SAME doc, not a new one. If we always
+    # `add()` here, that second call mints a second kind="ingest" row pointing
+    # at the same document, which corrupts artifact_counts (status would show
+    # "2 ingest" for one document). The invariant is "at most one ingest
+    # artifact per run" - so check for an existing row first and update it in
+    # place instead of inserting a duplicate.
+    existing = session.scalars(
+        select(db.AlchemyArtifact)
+        .where(db.AlchemyArtifact.run_id == run.id,
+               db.AlchemyArtifact.kind == "ingest")).first()
+    if existing is not None:
+        existing.document_id = doc.id
+        existing.payload = {"corpus_id": corpus_id, "filename": doc.filename}
+    else:
+        session.add(db.AlchemyArtifact(
+            run_id=run.id, goal_id=goal.id, kind="ingest",
+            key=f"ingest-v{run.version}", document_id=doc.id,
+            payload={"corpus_id": corpus_id, "filename": doc.filename}))
+    # Stamp a new dict (not in-place mutate) so SQLAlchemy flags the JSON column
+    # dirty and persists it.
+    run.config = {**(run.config or {}), "ingested_document_id": doc.id}
+    session.commit()
+    session.refresh(doc)
+    return doc
+
+
 def _proposal_dict(p: "db.ConfigProposal") -> dict:
     return {"id": p.id, "corpus_id": p.corpus_id, "eval_run_id": p.eval_run_id,
             "proposed_config": p.proposed_config, "evidence": p.evidence,
@@ -1833,11 +2169,17 @@ def launch_research(corpus_id: int, body: ResearchLaunch, session: SessionDep,
         raise HTTPException(status_code=404, detail="corpus not found")
     if not body.llm.get("provider") or not body.llm.get("model"):
         raise HTTPException(status_code=400, detail="llm provider and model are required")
+    llm_cfg = dict(body.llm)
+    effort = (body.reasoning_effort if body.reasoning_effort is not None
+              else llm_endpoints.endpoint_reasoning_effort(
+                  session, body.llm["provider"], body.llm["model"]))
+    if effort is not None:
+        llm_cfg["reasoning_effort"] = effort
     run = db.ResearchRun(
         corpus_id=corpus_id, status="pending", prompt=body.prompt,
         config={"source": body.source, "document_ids": body.document_ids,
                 "budget_chars": body.budget_chars, "max_rounds": body.max_rounds,
-                "llm": body.llm},
+                "llm": llm_cfg},
         progress={"phase": "pending"})
     session.add(run)
     session.flush()
@@ -1870,6 +2212,258 @@ def cancel_research(run_id: int, session: SessionDep):
     run = session.get(db.ResearchRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="research run not found")
+    if run.status in ("pending", "running"):
+        run.status = "cancelled"
+        session.commit()
+    return {"status": run.status}
+
+
+# ---- alchemy endpoints -----------------------------------------------------
+@app.post("/alchemy/goals", status_code=201, response_model=AlchemyGoalRead)
+def create_alchemy_goal(body: AlchemyGoalCreate, session: SessionDep):
+    if session.get(db.Corpus, body.corpus_id) is None:
+        raise HTTPException(status_code=404, detail="corpus not found")
+    # fail-fast: delegate ALL goal-type/spec validation to the compiler, the
+    # single source of truth for what a spec must contain. An uncompilable
+    # spec (bad type, missing goal, missing/headingless template) should 400
+    # at create time, not fail a run later. WHY delegate: new goal types (stage
+    # D) then need zero API edits - the compiler grows a branch, the endpoint
+    # does not. Lazy import keeps api module import light; the server importing
+    # alchemy is the allowed dependency direction.
+    from alchemy.compile import compile_spec
+    try:
+        compile_spec(body.goal_type, body.spec or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # name-only lookup: _resolve_goal's id-then-name resolution would spuriously
+    # match an unrelated goal by id when body.name happens to be all digits
+    existing = session.scalars(select(db.AlchemyGoal)
+                               .where(db.AlchemyGoal.name == body.name)).first()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="goal name already exists")
+    goal = db.AlchemyGoal(name=body.name, corpus_id=body.corpus_id,
+                          goal_type=body.goal_type, spec=body.spec,
+                          coverage=body.coverage,
+                          include_generated=body.include_generated)
+    session.add(goal)
+    session.commit()
+    session.refresh(goal)
+    return _alchemy_goal_dict(goal)
+
+
+@app.get("/alchemy/goals", response_model=list[AlchemyGoalRead])
+def list_alchemy_goals(session: SessionDep):
+    goals = session.scalars(select(db.AlchemyGoal)
+                            .order_by(db.AlchemyGoal.id.desc())).all()
+    return [_alchemy_goal_dict(g) for g in goals]
+
+
+@app.get("/alchemy/goals/{ref}", response_model=AlchemyGoalRead)
+def get_alchemy_goal(ref: str, session: SessionDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    return _alchemy_goal_dict(g)
+
+
+@app.delete("/alchemy/goals/{ref}", response_model=StatusResponse)
+def delete_alchemy_goal(ref: str, session: SessionDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    session.query(db.AlchemyArtifact).filter(
+        db.AlchemyArtifact.goal_id == g.id).delete()
+    session.query(db.AlchemyRun).filter(db.AlchemyRun.goal_id == g.id).delete()
+    session.delete(g)
+    session.commit()
+    return {"status": "deleted"}
+
+
+@app.post("/alchemy/goals/{ref}/runs", status_code=201, response_model=AlchemyRunRead)
+def start_alchemy_run(ref: str, body: AlchemyRunLaunch, session: SessionDep,
+                      enqueue: AlchemyEnqueueDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    llm_cfg = dict(body.llm or {})
+    if "provider" not in llm_cfg and "model" not in llm_cfg:
+        # No llm block at all -> fall back to the default registry row (the same
+        # is_default row resolve_llm picks for the query plane) and stamp the
+        # resolved pair into the run config, so the run record is explicit
+        # about what it used. Fallback is all-or-nothing: see the elif.
+        default = session.scalar(
+            select(db.LlmEndpoint).where(db.LlmEndpoint.is_default.is_(True)))
+        if default is None:
+            raise HTTPException(
+                status_code=400,
+                detail="llm provider and model are required "
+                       "(no default LLM endpoint configured)")
+        llm_cfg = {"provider": default.provider, "model": default.model}
+    elif not llm_cfg.get("provider") or not llm_cfg.get("model"):
+        # a PARTIAL or BLANKED pair (one key missing, or a present-but-empty
+        # provider/model) is a client mistake, not a request for the default -
+        # silently substituting the default here would hide the caller's bug.
+        # Only a fully-absent llm block (both keys missing) means "use default".
+        raise HTTPException(status_code=400,
+                            detail="llm provider and model are required")
+    effort = (body.reasoning_effort if body.reasoning_effort is not None
+              else llm_endpoints.endpoint_reasoning_effort(
+                  session, llm_cfg["provider"], llm_cfg["model"]))
+    if effort is not None:
+        llm_cfg["reasoning_effort"] = effort
+    last = session.scalars(select(db.AlchemyRun)
+                           .where(db.AlchemyRun.goal_id == g.id)
+                           .order_by(db.AlchemyRun.version.desc())).first()
+    version = (last.version + 1) if last else 1
+    prior_draft_version = body.based_on_version
+    if prior_draft_version is None:
+        # default: revise the highest-version run whose draft is worth
+        # revising. A non-empty draft is NOT enough: a report draft is ALWAYS
+        # non-empty (it renders a placeholder skeleton even when every section
+        # was starved), so a cancelled/capped zero-filled v2 would otherwise
+        # shadow a fully-filled v1. A run qualifies when its draft is non-empty
+        # AND (it has no per-section data -> living-research, OR at least one
+        # section actually filled).
+        candidates = session.scalars(
+            select(db.AlchemyRun)
+            .where(db.AlchemyRun.goal_id == g.id,
+                   db.AlchemyRun.draft_markdown.isnot(None),
+                   db.AlchemyRun.draft_markdown != "")
+            .order_by(db.AlchemyRun.version.desc())).all()
+        for cand in candidates:
+            secs = cand.sections
+            if not secs or any(s.get("filled") for s in secs):
+                prior_draft_version = cand.version
+                break
+    run = db.AlchemyRun(
+        goal_id=g.id, version=version, status="pending",
+        coverage=body.coverage or g.coverage, guidance=body.guidance,
+        based_on_version=prior_draft_version,
+        progress={"phase": "pending"},
+        config={"llm": llm_cfg, "budget_chars": body.budget_chars,
+                "max_rounds": body.max_rounds,
+                "max_llm_calls": body.max_llm_calls,
+                "fresh_coverage": body.fresh_coverage,
+                "concurrency": body.concurrency})
+    session.add(run)
+    session.flush()
+    enqueue(session, run.id)
+    session.commit()
+    session.refresh(run)
+    return _alchemy_run_dict(run)
+
+
+@app.get("/alchemy/goals/{ref}/runs", response_model=list[AlchemyRunList])
+def list_alchemy_runs(ref: str, session: SessionDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    runs = session.scalars(select(db.AlchemyRun)
+                           .where(db.AlchemyRun.goal_id == g.id)
+                           .order_by(db.AlchemyRun.version.desc())).all()
+    return [_alchemy_run_dict(r) for r in runs]
+
+
+@app.get("/alchemy/goals/{ref}/runs/{version}", response_model=AlchemyRunRead)
+def get_alchemy_run(ref: str, version: int, session: SessionDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    run = session.scalars(select(db.AlchemyRun)
+                          .where(db.AlchemyRun.goal_id == g.id,
+                                 db.AlchemyRun.version == version)).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="run version not found")
+    d = _alchemy_run_dict(run, with_draft=True)
+    # a cheap group-by so `status` can show "artifacts: 2 digest" without a
+    # second round-trip; only counts (not full payloads) ride the run detail.
+    counts: dict[str, int] = {}
+    for (kind,) in session.query(db.AlchemyArtifact.kind).filter(
+            db.AlchemyArtifact.run_id == run.id):
+        counts[kind] = counts.get(kind, 0) + 1
+    d["artifact_counts"] = counts
+    return d
+
+
+@app.get("/alchemy/goals/{ref}/runs/{version}/artifacts",
+         response_model=list[AlchemyArtifactRead])
+def list_alchemy_artifacts(ref: str, version: int, session: SessionDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    run = session.scalars(select(db.AlchemyRun)
+                          .where(db.AlchemyRun.goal_id == g.id,
+                                 db.AlchemyRun.version == version)).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="run version not found")
+    rows = session.scalars(select(db.AlchemyArtifact)
+                           .where(db.AlchemyArtifact.run_id == run.id)
+                           .order_by(db.AlchemyArtifact.id)).all()
+    return [_alchemy_artifact_dict(a) for a in rows]
+
+
+@app.post("/alchemy/goals/{ref}/runs/{version}/ingest",
+          response_model=DocumentRead, status_code=202)
+def ingest_alchemy_run(ref: str, version: int, body: AlchemyIngest,
+                       session: SessionDep, settings: SettingsDep,
+                       enqueue: EnqueueDep, enqueue_build: BuildPipelineEnqueueDep):
+    """Ingest a run's draft back into the library as a generated document
+    (origin='generated'). Default target corpus = the goal's own corpus,
+    overridable by name."""
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    run = session.scalars(select(db.AlchemyRun)
+                          .where(db.AlchemyRun.goal_id == g.id,
+                                 db.AlchemyRun.version == version)).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="run version not found")
+    corpus_id = (_resolve_corpus_id_or_404(session, body.corpus)
+                 if body.corpus else g.corpus_id)
+    return _ingest_run_draft(session, settings, enqueue, enqueue_build,
+                             g, run, corpus_id)
+
+
+@app.post("/alchemy/goals/{ref}/finalize", response_model=AlchemyRunRead)
+def finalize_alchemy_run(ref: str, body: AlchemyFinalize, session: SessionDep,
+                         settings: SettingsDep, enqueue: EnqueueDep,
+                         enqueue_build: BuildPipelineEnqueueDep):
+    g = _resolve_goal(session, ref)
+    if g is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    run = session.scalars(select(db.AlchemyRun)
+                          .where(db.AlchemyRun.goal_id == g.id,
+                                 db.AlchemyRun.version == body.version)).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="run version not found")
+    # finalize flags a reviewed deliverable; a run that is not done, or done
+    # with nothing to show, has nothing to flag. Export (any state) is the
+    # escape hatch, so this guard costs no capability - it prevents the
+    # almost-certain mistake of finalizing an empty draft.
+    if run.status != "done" or not (run.draft_markdown or "").strip():
+        raise HTTPException(
+            status_code=409,
+            detail="only a completed run with a draft can be finalized")
+    # Opt-in ingest FIRST (shares finalize's guard). finalize must not silently
+    # mutate the document set, so this only fires when the caller asks.
+    if body.ingest:
+        _ingest_run_draft(session, settings, enqueue, enqueue_build,
+                          g, run, g.corpus_id)
+    # one final version at a time: clear any prior final on this goal
+    session.query(db.AlchemyRun).filter(
+        db.AlchemyRun.goal_id == g.id, db.AlchemyRun.is_final == True).update(  # noqa: E712
+        {"is_final": False})
+    run.is_final = True
+    session.commit()
+    session.refresh(run)
+    return _alchemy_run_dict(run, with_draft=True)
+
+
+@app.post("/alchemy/runs/{run_id}/cancel", response_model=StatusResponse)
+def cancel_alchemy_run(run_id: int, session: SessionDep):
+    run = session.get(db.AlchemyRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
     if run.status in ("pending", "running"):
         run.status = "cancelled"
         session.commit()
@@ -1946,7 +2540,10 @@ def _endpoint_read(row: db.LlmEndpoint) -> LlmEndpointRead:
         model=row.model, api_base=row.api_base, key_env_var=row.key_env_var,
         is_default=row.is_default, key_present=present,
         supports_text=row.supports_text, supports_vision=row.supports_vision,
-        is_vision_default=row.is_vision_default, api_flavor=row.api_flavor)
+        is_vision_default=row.is_vision_default, api_flavor=row.api_flavor,
+        context_window_tokens=row.context_window_tokens,
+        source_chars_budget=row.source_chars_budget,
+        reasoning_effort=row.reasoning_effort)
 
 
 @app.post("/llm-endpoints", response_model=LlmEndpointRead, status_code=201)
@@ -1960,7 +2557,10 @@ def create_llm_endpoint(body: LlmEndpointCreate, session: SessionDep):
         api_base=body.api_base, key_env_var=body.key_env_var, is_default=first,
         supports_text=body.supports_text, supports_vision=body.supports_vision,
         is_vision_default=(body.supports_vision and not has_vision_default),
-        api_flavor=body.api_flavor)
+        api_flavor=body.api_flavor,
+        context_window_tokens=body.context_window_tokens,
+        source_chars_budget=body.source_chars_budget,
+        reasoning_effort=body.reasoning_effort)
     session.add(row)
     try:
         session.commit()
@@ -1977,6 +2577,19 @@ def list_llm_endpoints(session: SessionDep):
     return [_endpoint_read(r) for r in rows]
 
 
+@app.get("/llm-endpoints/{endpoint_id}/models", response_model=list[EndpointModel])
+def list_endpoint_models(endpoint_id: int, session: SessionDep, settings: SettingsDep):
+    """The models this endpoint's upstream serves, each with its reasoning
+    ladder. Populates the launch forms' model dropdown so a proxy connection
+    (e.g. codex-proxy) fans out into its many models rather than the single
+    pinned one. Always returns >=1 entry (falls back to the pinned model when
+    the upstream /v1/models is unreachable)."""
+    row = session.get(db.LlmEndpoint, endpoint_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="endpoint not found")
+    return llm_endpoints.endpoint_models(settings, row)
+
+
 @app.put("/llm-endpoints/{endpoint_id}", response_model=LlmEndpointRead)
 def update_llm_endpoint(endpoint_id: int, body: LlmEndpointCreate, session: SessionDep):
     row = session.get(db.LlmEndpoint, endpoint_id)
@@ -1986,6 +2599,9 @@ def update_llm_endpoint(endpoint_id: int, body: LlmEndpointCreate, session: Sess
     row.api_base, row.key_env_var = body.api_base, body.key_env_var
     row.supports_text, row.supports_vision = body.supports_text, body.supports_vision
     row.api_flavor = body.api_flavor
+    row.context_window_tokens = body.context_window_tokens
+    row.source_chars_budget = body.source_chars_budget
+    row.reasoning_effort = body.reasoning_effort
     if not body.supports_vision:
         row.is_vision_default = False
     if not body.supports_text:

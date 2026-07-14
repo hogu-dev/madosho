@@ -1,0 +1,44 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  madosho-cli:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write          # OIDC for Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build --wheel packaging/madosho-cli
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packaging/madosho-cli/dist
+
+  madosho-mcp:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build --wheel packaging/madosho-mcp
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packaging/madosho-mcp/dist
+
+  madosho:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build --wheel     # server dist; root pyproject
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

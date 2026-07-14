@@ -7,7 +7,8 @@ import { useAuth } from "../auth/AuthContext";
 // Button is used for the submit action; row-level delete/default use plain <button> for compact sizing
 
 const EMPTY: LlmEndpointInput = { name: "", provider: "openai", model: "", api_base: "",
-  key_env_var: null, supports_text: true, supports_vision: false, api_flavor: "chat" };
+  key_env_var: null, supports_text: true, supports_vision: false, api_flavor: "chat",
+  context_window_tokens: null, source_chars_budget: null, reasoning_effort: null };
 
 export function Settings() {
   const { canWrite } = useAuth();
@@ -23,6 +24,12 @@ export function Settings() {
 
   const setBool = (k: "supports_text" | "supports_vision") =>
     (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: e.target.checked });
+
+  // set() stores raw strings, which is wrong for these numeric columns; coerce
+  // "" -> null (unset) and any other value -> a number.
+  const setNum = (k: "context_window_tokens" | "source_chars_budget") =>
+    (e: React.ChangeEvent<HTMLInputElement>) =>
+      setForm({ ...form, [k]: e.target.value === "" ? null : Number(e.target.value) });
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -172,6 +179,33 @@ export function Settings() {
                 <option value="chat">chat completions (standard)</option>
                 <option value="responses">responses API</option>
               </select>
+            </div>
+            <div style={fieldStyle}>
+              <label htmlFor="ep-ctx-window">Context window (tokens)</label>
+              <input id="ep-ctx-window" type="number" min={1} style={inputStyle}
+                value={form.context_window_tokens ?? ""} onChange={setNum("context_window_tokens")}
+                placeholder="e.g. 8192 (optional)" />
+            </div>
+            <div style={fieldStyle}>
+              <label htmlFor="ep-source-budget">Source chars budget</label>
+              <input id="ep-source-budget" type="number" min={1} style={inputStyle}
+                value={form.source_chars_budget ?? ""} onChange={setNum("source_chars_budget")}
+                placeholder="e.g. 16000 (optional)" />
+            </div>
+            <div style={fieldStyle}>
+              <label htmlFor="ep-reasoning-effort">Reasoning effort</label>
+              <input id="ep-reasoning-effort" list="reasoning-effort-presets" style={inputStyle}
+                value={form.reasoning_effort ?? ""}
+                onChange={(e) => setForm({ ...form,
+                  reasoning_effort: e.target.value === "" ? null : e.target.value })}
+                placeholder="default (unset)" />
+              {/* Suggestions only (the field is a free text input): the GPT-5
+                  codex family runs none..xhigh/max; older models used minimal. */}
+              <datalist id="reasoning-effort-presets">
+                <option value="none" /><option value="minimal" /><option value="low" />
+                <option value="medium" /><option value="high" />
+                <option value="xhigh" /><option value="max" />
+              </datalist>
             </div>
           </div>
           <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: "var(--ink-muted)" }}>

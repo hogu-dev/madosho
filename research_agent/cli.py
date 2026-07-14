@@ -39,13 +39,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-rounds", type=int, default=8, dest="max_rounds")
     p.add_argument("--autonomous-md", default=None, dest="autonomous_md",
                    help="path to an autonomous.md override (default: the shipped one)")
+    p.add_argument("--kb", default=None,
+                   help="path to an llmkb KB the agent may read/write via kb_ tools")
     p.add_argument("--out", default=None, help="write the report markdown to this path")
     p.set_defaults(func=cmd_run)
     return ap
 
 
-def _make_tools(args) -> CliToolProvider:
-    return CliToolProvider(args.cli.split())
+def _make_tools(args):
+    base = CliToolProvider(args.cli.split())
+    if getattr(args, "kb", None):
+        from .tools import LlmkbToolProvider, MultiToolProvider
+        return MultiToolProvider([base, LlmkbToolProvider(args.kb)])
+    return base
 
 
 def _make_endpoint(args) -> LlmEndpoint:

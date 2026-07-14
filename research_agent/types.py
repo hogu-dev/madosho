@@ -22,11 +22,14 @@ class RunBudget:
 @dataclass
 class LlmEndpoint:
     """OpenAI-compatible endpoint config. Pluggable, no default - provider/model must be set.
-    api_key/api_base arrive from env or flags and are never logged."""
+    api_key/api_base arrive from env or flags and are never logged.
+    reasoning_effort is an opaque, model-native string (e.g. "low"/"high");
+    None means send no effort signal (any_llm's default applies)."""
     provider: str
     model: str
     api_key: str | None = None
     api_base: str | None = None
+    reasoning_effort: str | None = None
 
 
 @dataclass
@@ -58,9 +61,13 @@ class ToolCall:
 @dataclass
 class AssistantTurn:
     """One model turn, normalized away from any LLM client's response object.
-    text is the prose (final report when there are no tool_calls)."""
+    text is the prose (final report when there are no tool_calls).
+    usage is the provider's token accounting for THIS turn when the provider
+    reports it (prompt/completion/total tokens) - optional and unread by the
+    loop itself; consumers that meter spend (alchemy) sum it across turns."""
     text: str | None
     tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: dict | None = None
 
 
 @dataclass

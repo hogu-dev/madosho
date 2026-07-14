@@ -93,6 +93,27 @@ def dispatch(name: str, arguments: dict) -> dict:
         )
     if name == "document-status":
         return core.document_status(arguments["document_id"])
+    if name == "list-goals":
+        # core returns a bare list, but MCP structured content must be a dict
+        # (the SDK would try to validate a bare list as content blocks), so
+        # wrap it -- on this transport only; CLI/toolserver return the raw list.
+        return {"goals": core.alchemy_list_goals()}
+    if name == "goal-runs":
+        return {"runs": core.alchemy_list_runs(arguments["goal"])}
+    if name == "export-goal-run":
+        return core.alchemy_export_run(
+            arguments["goal"], version=arguments.get("version"))
+    if name == "run-goal":
+        # provider/model may be absent: pass None through; the server-side
+        # default llm-endpoint fallback owns the substitution.
+        return core.alchemy_run(
+            arguments["goal"],
+            arguments.get("provider"),
+            arguments.get("model"),
+            coverage=arguments.get("coverage"),
+            guidance=arguments.get("guidance"),
+            max_llm_calls=arguments["max_llm_calls"],
+        )
     raise ValueError(f"unknown tool: {name!r}")
 
 

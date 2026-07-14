@@ -5,7 +5,8 @@ documents into searchable corpora; these skills let an agent (or you) search and
 them and answer with citations.
 
 - To drive the tools yourself, use the `madosho-search` skill (search / search-doc
-  / get-doc / list-corpora / list-documents / list-pipelines over `madosho-cli`).
+  / get-doc / list-corpora / list-documents / list-pipelines / list-goals /
+  goal-runs / export-goal-run / run-goal over `madosho-cli`).
 - For an autonomous research pass that returns a cited report, use the
   `madosho-research` skill.
 

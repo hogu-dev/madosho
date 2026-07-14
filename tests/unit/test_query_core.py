@@ -97,3 +97,69 @@ def test_serialize_pipeline_hits_basenames_source():
     row = query_core.serialize_pipeline_hits([ph])[0]
     assert row["source"] == "contract.pdf"
     assert row["citation"] == "contract.pdf p.1"
+
+
+def test_serialize_pipeline_hits_appends_generated_origin():
+    from types import SimpleNamespace
+    ph = SimpleNamespace(hit=_hit("t", page=2, source="/fs/g.md"),
+                         document_id=5, pipeline_id=1, pipeline_name="p")
+    origins = {5: ("generated", {"goal": "find_vuln", "version": 2})}
+    row = query_core.serialize_pipeline_hits([ph], origins=origins)[0]
+    assert row["origin"] == "generated"
+    assert row["citation"] == "g.md p.2 [generated: find_vuln v2]"
+
+
+def test_serialize_pipeline_hits_source_doc_unlabeled():
+    from types import SimpleNamespace
+    ph = SimpleNamespace(hit=_hit("t", page=2, source="/fs/s.pdf"),
+                         document_id=6, pipeline_id=1, pipeline_name="p")
+    origins = {6: ("source", {})}
+    row = query_core.serialize_pipeline_hits([ph], origins=origins)[0]
+    assert row["origin"] == "source"
+    assert row["citation"] == "s.pdf p.2"        # unchanged, no suffix
+
+
+def test_serialize_pipeline_hits_without_origins_is_unchanged():
+    # the existing no-origins call path stays byte-identical (source default)
+    from types import SimpleNamespace
+    ph = SimpleNamespace(hit=_hit("t", page=1, source="/fs/x.pdf"),
+                         document_id=7, pipeline_id=3, pipeline_name="d")
+    row = query_core.serialize_pipeline_hits([ph])[0]
+    assert row["citation"] == "x.pdf p.1"
+    assert row["origin"] == "source"
+
+
+# ---------------------------------------------------------------------------
+# generate_from_hits reasoning_effort forwarding (Task 10 follow-up)
+# ---------------------------------------------------------------------------
+
+def _settings():
+    from types import SimpleNamespace
+    return SimpleNamespace()
+
+
+def _fake_result():
+    from types import SimpleNamespace
+    return SimpleNamespace(choices=[])
+
+
+def test_generate_from_hits_forwards_reasoning_effort_when_set(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(query_core.llm, "complete",
+                        lambda **kw: captured.update(kw) or _fake_result())
+    query_core.generate_from_hits([], [{"role": "user", "content": "q"}],
+                                  provider="openai", model="m", settings=_settings(),
+                                  reasoning_effort="low")
+    assert captured["reasoning_effort"] == "low"
+
+
+def test_generate_from_hits_omits_reasoning_effort_when_unset(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(query_core.llm, "complete",
+                        lambda **kw: captured.update(kw) or _fake_result())
+    query_core.generate_from_hits([], [{"role": "user", "content": "q"}],
+                                  provider="openai", model="m", settings=_settings())
+    # `llm.complete` itself omits the kwarg from the provider call when falsy
+    # (Task 3); at this seam (the call INTO llm.complete) the default None is
+    # visible as the value, which is the "not forwarded" signal.
+    assert captured.get("reasoning_effort") is None

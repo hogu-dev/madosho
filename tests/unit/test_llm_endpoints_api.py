@@ -23,7 +23,8 @@ def test_crud_and_set_default(client, monkeypatch):
     assert set(first.keys()) == {"id", "name", "provider", "model", "api_base",
                                  "key_env_var", "is_default", "key_present",
                                  "supports_text", "supports_vision", "is_vision_default",
-                                 "api_flavor"}
+                                 "api_flavor", "context_window_tokens",
+                                 "source_chars_budget", "reasoning_effort"}
     assert first["api_flavor"] == "chat"        # default when unspecified
 
     r2 = client.post("/llm-endpoints", json={"name": "qwen", "provider": "openai",
@@ -165,3 +166,100 @@ def test_update_clears_default_when_text_removed(client):
     upd = client.put(f"/llm-endpoints/{a['id']}", json={"name": "a", "provider": "o",
         "model": "m", "api_base": "u", "supports_text": False, "supports_vision": True}).json()
     assert upd["is_default"] is False
+
+
+def test_context_metadata_round_trip(client):
+    # Create with both fields set -> echoed back on read.
+    r = client.post("/llm-endpoints", json={"name": "budgeted", "provider": "openai",
+        "model": "granite-4", "api_base": "http://h/v1",
+        "context_window_tokens": 8192, "source_chars_budget": 16000})
+    assert r.status_code == 201, r.text
+    ep = r.json()
+    assert ep["context_window_tokens"] == 8192
+    assert ep["source_chars_budget"] == 16000
+
+    # Omitted on create -> null (the fields are optional).
+    r2 = client.post("/llm-endpoints", json={"name": "plain", "provider": "openai",
+        "model": "m", "api_base": "u"})
+    assert r2.status_code == 201, r2.text
+    plain = r2.json()
+    assert plain["context_window_tokens"] is None
+    assert plain["source_chars_budget"] is None
+
+    # PUT rewrites the row from the body: a supplied field updates, an omitted
+    # field resets to null (same full-replace semantics as the other columns).
+    upd = client.put(f"/llm-endpoints/{ep['id']}", json={"name": "budgeted",
+        "provider": "openai", "model": "granite-4", "api_base": "http://h/v1",
+        "source_chars_budget": 20000})
+    assert upd.status_code == 200, upd.text
+    assert upd.json()["source_chars_budget"] == 20000
+    assert upd.json()["context_window_tokens"] is None
+
+
+def test_context_metadata_rejects_non_positive(client):
+    # Field(ge=1): zero/negative are nonsensical budgets -> 422 before the DB.
+    r = client.post("/llm-endpoints", json={"name": "bad", "provider": "o",
+        "model": "m", "api_base": "u", "source_chars_budget": 0})
+    assert r.status_code == 422
+    r2 = client.post("/llm-endpoints", json={"name": "bad2", "provider": "o",
+        "model": "m", "api_base": "u", "context_window_tokens": -1})
+    assert r2.status_code == 422
+
+
+def test_reasoning_effort_create_read_update_roundtrip(client):
+    r = client.post("/llm-endpoints", json={"name": "codex", "provider": "openai",
+        "model": "gpt-5.6-sol", "api_base": "http://h/v1", "reasoning_effort": "low"})
+    assert r.status_code == 201, r.text
+    row = r.json()
+    assert row["reasoning_effort"] == "low"
+    assert "reasoning_effort" in row.keys()
+
+    upd = client.put(f"/llm-endpoints/{row['id']}", json={"name": "codex",
+        "provider": "openai", "model": "gpt-5.6-sol", "api_base": "http://h/v1",
+        "reasoning_effort": "high"})
+    assert upd.status_code == 200, upd.text
+    assert upd.json()["reasoning_effort"] == "high"
+
+
+def test_reasoning_effort_blank_becomes_unset(client):
+    r = client.post("/llm-endpoints", json={"name": "e", "provider": "openai",
+        "model": "m", "api_base": "http://h/v1", "reasoning_effort": "   "})
+    assert r.status_code == 201, r.text
+    assert r.json()["reasoning_effort"] is None   # whitespace-only -> unset
+
+
+def test_reasoning_effort_omitted_is_none(client):
+    r = client.post("/llm-endpoints", json={"name": "e2", "provider": "openai",
+        "model": "m", "api_base": "http://h/v1"})
+    assert r.status_code == 201, r.text
+    assert r.json()["reasoning_effort"] is None
+
+
+def test_reasoning_effort_over_cap_rejected(client):
+    r = client.post("/llm-endpoints", json={"name": "e3", "provider": "openai",
+        "model": "m", "api_base": "http://h/v1", "reasoning_effort": "x" * 33})
+    assert r.status_code == 422
+
+
+def test_list_endpoint_models_route(client, monkeypatch):
+    from madosho_server import llm_endpoints
+    r = client.post("/llm-endpoints", json={"name": "codex", "provider": "openai",
+        "model": "gpt-5.5", "api_base": "http://proxy:10531/v1", "api_flavor": "responses"})
+    assert r.status_code == 201, r.text
+    eid = r.json()["id"]
+
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"data": [{"id": "gpt-5.6-sol"}, {"id": "codex-auto-review"}]}
+    monkeypatch.setattr(llm_endpoints.httpx, "get", lambda *a, **k: _Resp())
+
+    got = client.get(f"/llm-endpoints/{eid}/models")
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert [m["id"] for m in body] == ["gpt-5.6-sol", "codex-auto-review"]
+    assert body[0]["reasoning_efforts"][-1] == "max"
+    assert body[1]["reasoning_efforts"] == []
+
+
+def test_list_endpoint_models_404_for_unknown(client):
+    assert client.get("/llm-endpoints/9999/models").status_code == 404

@@ -27,6 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="madosho-cli",
         description="Command-line client over madosho's HTTP API.",
     )
+    ap.add_argument(
+        "--exclude-generated", action="store_true", dest="exclude_generated",
+        help="hide alchemy-generated documents from search results",
+    )
     sub = ap.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("list-corpora", help="list available corpora")
@@ -105,6 +109,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(p)
     p.set_defaults(func=commands.cmd_upload_document)
 
+    p = sub.add_parser("import-kb", help="import an llmkb knowledge base as one document")
+    p.add_argument("path", help="path to the KB directory")
+    p.add_argument("--corpus", help="corpus to add the imported document to")
+    p.add_argument("--no-wait", action="store_true", dest="no_wait",
+                   help="return immediately instead of waiting for indexing")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_import_kb)
+
     p = sub.add_parser("build-pipeline", help="build a new pipeline on a document")
     p.add_argument("document_id", type=int)
     p.add_argument("name")
@@ -133,6 +145,45 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(p)
     p.set_defaults(func=commands.cmd_document_status)
 
+    # --- flat agent-facing goal tools (on the manifest; the nested `alchemy`
+    # group below stays the richer human surface) ---
+
+    p = sub.add_parser("list-goals", help="list alchemy goals")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_list_goals)
+
+    p = sub.add_parser("goal-runs", help="list an alchemy goal's runs (newest first)")
+    p.add_argument("goal", help="goal name or id")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_goal_runs)
+
+    p = sub.add_parser("export-goal-run",
+                       help="one run's draft + section summary as JSON (no files)")
+    p.add_argument("goal", help="goal name or id")
+    p.add_argument("--version", type=int, default=None,
+                   help="run version (default: latest)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_export_goal_run)
+
+    p = sub.add_parser("run-goal",
+                       help="start a new run of an alchemy goal (returns immediately)")
+    p.add_argument("goal", help="goal name or id")
+    p.add_argument("max_llm_calls", type=int,
+                   help="hard cap on LLM calls for this run")
+    p.add_argument("--guidance", default=None,
+                   help="steering note for this run")
+    p.add_argument("--coverage", default=None,
+                   choices=["search", "full", "exhaustive"])
+    p.add_argument("--provider", default=None,
+                   help="LLM provider (default: the server's default llm endpoint)")
+    p.add_argument("--model", default=None,
+                   help="LLM model name (default: the server's default llm endpoint)")
+    p.add_argument("--reasoning-effort", dest="reasoning_effort", default=None,
+                   help="model-native reasoning effort (e.g. low/high); "
+                        "omit to use the endpoint's default")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_run_goal)
+
     p = sub.add_parser("list-runs",
                        help="list research or eval runs for a corpus")
     p.add_argument("corpus_id", type=int)
@@ -152,6 +203,111 @@ def build_parser() -> argparse.ArgumentParser:
                    help="skip confirmation prompt")
     _add_json(p)
     p.set_defaults(func=commands.cmd_cancel_run)
+
+    # --- alchemy (autonomous goals / living research) ---
+    # Nested group (dest="subcommand"), CLI-only - not on the agent-tools
+    # manifest, so it never reaches MCP/toolserver.
+
+    alch = sub.add_parser("alchemy", help="autonomous goals (reports / living research)")
+    alch_sub = alch.add_subparsers(dest="subcommand", required=True)
+
+    p = alch_sub.add_parser("create", help="create a goal")
+    p.add_argument("name")
+    p.add_argument("--corpus", required=True, help="corpus name")
+    p.add_argument("--type", dest="goal_type", default="living-research",
+                   choices=["living-research", "report"])
+    p.add_argument("--goal", default=None,
+                   help="the goal statement (living-research)")
+    p.add_argument("--spec", dest="spec_path", default=None,
+                   help="markdown template file (report)")
+    p.add_argument("--coverage", default="search",
+                   choices=["search", "full", "exhaustive"])
+    p.add_argument("--include-generated", action="store_true",
+                   dest="include_generated",
+                   help="let this goal's runs cite alchemy-generated documents")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_create)
+
+    p = alch_sub.add_parser("run", help="start a run of a goal")
+    p.add_argument("ref", help="goal name or id")
+    p.add_argument("--provider", default=None,
+                   help="LLM provider (with --model; omit both to use the "
+                        "server's default LLM endpoint)")
+    p.add_argument("--model", default=None,
+                   help="LLM model (with --provider; omit both to use the "
+                        "server's default LLM endpoint)")
+    p.add_argument("--coverage", default=None,
+                   choices=["search", "full", "exhaustive"])
+    p.add_argument("--fresh-coverage", action="store_true",
+                   help="re-consult the corpus from scratch instead of "
+                        "inheriting coverage from the run this revises")
+    p.add_argument("--guidance", default=None)
+    p.add_argument("--based-on", dest="based_on", type=int, default=None,
+                   help="version to revise (default: latest with a draft)")
+    p.add_argument("--max-llm-calls", dest="max_llm_calls", type=int, default=None)
+    p.add_argument("--concurrency", type=int, default=1,
+                   help="parallel work units per run (1-8, default 1)")
+    p.add_argument("--reasoning-effort", dest="reasoning_effort", default=None,
+                   help="model-native reasoning effort (e.g. low/high); "
+                        "omit to use the endpoint's default")
+    p.add_argument("--no-wait", dest="no_wait", action="store_true")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_run)
+
+    p = alch_sub.add_parser("status", help="show a run's status")
+    p.add_argument("ref")
+    p.add_argument("--run", type=int, default=None, help="version (default: latest)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_status)
+
+    p = alch_sub.add_parser("export",
+                            help="write a run's draft to a markdown or JSON file")
+    p.add_argument("ref")
+    p.add_argument("--run", type=int, default=None, help="version (default: latest)")
+    p.add_argument("-o", "--output", default=None)
+    p.add_argument("--format", dest="format", default="md",
+                   choices=["md", "json"],
+                   help="md = the rendered markdown draft; "
+                        "json = structured section results")
+    p.set_defaults(func=commands.cmd_alchemy_export)
+
+    p = alch_sub.add_parser("finalize", help="mark a version final")
+    p.add_argument("ref")
+    p.add_argument("--run", type=int, required=True, help="version to finalize")
+    p.add_argument("--ingest", action="store_true",
+                   help="also ingest the draft as a generated document")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_finalize)
+
+    p = alch_sub.add_parser(
+        "ingest", help="ingest a run's draft as a generated document")
+    p.add_argument("ref")
+    p.add_argument("--run", type=int, default=None,
+                   help="version (default: latest)")
+    p.add_argument("--corpus", default=None,
+                   help="target corpus (default: the goal's corpus)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_ingest)
+
+    p = alch_sub.add_parser("list", help="list goals")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_list)
+
+    p = alch_sub.add_parser("runs", help="list a goal's runs")
+    p.add_argument("ref")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_runs)
+
+    p = alch_sub.add_parser("artifacts", help="list a run's stage artifacts")
+    p.add_argument("ref")
+    p.add_argument("--run", type=int, default=None, help="version (default: latest)")
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_artifacts)
+
+    p = alch_sub.add_parser("cancel", help="cancel a run by id")
+    p.add_argument("run_id", type=int)
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_cancel)
 
     return ap
 

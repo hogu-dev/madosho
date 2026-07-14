@@ -38,6 +38,10 @@ class AnyLlmClient:
             creds["api_key"] = self.endpoint.api_key
         if self.endpoint.api_base:
             creds["api_base"] = self.endpoint.api_base
+        # Only forward reasoning_effort when the endpoint sets it; leaving it out
+        # lets any_llm apply its own default (which drops the field for OpenAI).
+        if self.endpoint.reasoning_effort:
+            creds["reasoning_effort"] = self.endpoint.reasoning_effort
         resp = completion(
             model=self.endpoint.model,
             provider=self.endpoint.provider,
@@ -56,4 +60,13 @@ class AnyLlmClient:
             except (json.JSONDecodeError, TypeError):
                 parsed = {}
             calls.append(ToolCall(id=tc.id, name=fn.name, arguments=parsed))
-        return AssistantTurn(text=getattr(msg, "content", None), tool_calls=calls)
+        u = getattr(resp, "usage", None)
+        usage = None
+        if u is not None:
+            usage = {
+                "prompt_tokens": getattr(u, "prompt_tokens", None),
+                "completion_tokens": getattr(u, "completion_tokens", None),
+                "total_tokens": getattr(u, "total_tokens", None),
+            }
+        return AssistantTurn(text=getattr(msg, "content", None),
+                             tool_calls=calls, usage=usage)

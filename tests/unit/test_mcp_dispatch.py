@@ -80,3 +80,57 @@ def test_dispatch_propagates_cli_error(monkeypatch):
     monkeypatch.setattr(server.core, "list_corpora", boom)
     with pytest.raises(http.CliError):
         server.dispatch("list-corpora", {})
+
+
+def test_dispatch_list_goals_routes_to_core(monkeypatch):
+    monkeypatch.setattr(server.core, "alchemy_list_goals",
+                        lambda: [{"id": 1, "name": "find_vuln", "corpus_id": 3}])
+    out = server.dispatch("list-goals", {})
+    # wrapped: MCP structured content must be a dict; core returns a bare list
+    assert out == {"goals": [{"id": 1, "name": "find_vuln", "corpus_id": 3}]}
+
+
+def test_dispatch_goal_runs_routes_to_core(monkeypatch):
+    seen = {}
+
+    def fake_list_runs(ref):
+        seen["ref"] = ref
+        return [{"version": 2, "status": "running"}]
+
+    monkeypatch.setattr(server.core, "alchemy_list_runs", fake_list_runs)
+    out = server.dispatch("goal-runs", {"goal": "find_vuln"})
+    assert out == {"runs": [{"version": 2, "status": "running"}]}
+    assert seen == {"ref": "find_vuln"}
+
+
+def test_dispatch_export_goal_run_routes_to_core(monkeypatch):
+    seen = {}
+
+    def fake_export(ref, version=None):
+        seen.update(ref=ref, version=version)
+        return {"goal": ref, "version": 2, "status": "done",
+                "draft_markdown": "# D", "sections": [], "citations": 0}
+
+    monkeypatch.setattr(server.core, "alchemy_export_run", fake_export)
+    out = server.dispatch("export-goal-run", {"goal": "find_vuln"})
+    assert out["version"] == 2
+    assert seen == {"ref": "find_vuln", "version": None}   # omitted -> latest
+
+
+def test_dispatch_run_goal_routes_to_core(monkeypatch):
+    seen = {}
+
+    def fake_run(ref, provider, model, *, coverage=None, guidance=None,
+                 based_on_version=None, budget_chars=100_000, max_rounds=8,
+                 max_llm_calls=None, fresh_coverage=False):
+        seen.update(ref=ref, provider=provider, model=model, coverage=coverage,
+                    guidance=guidance, max_llm_calls=max_llm_calls)
+        return {"version": 3, "status": "pending"}
+
+    monkeypatch.setattr(server.core, "alchemy_run", fake_run)
+    out = server.dispatch("run-goal", {"goal": "find_vuln", "max_llm_calls": 6,
+                                       "guidance": "dig", "coverage": "full"})
+    assert out == {"version": 3, "status": "pending"}
+    # provider/model omitted -> None passes through (server-side fallback)
+    assert seen == {"ref": "find_vuln", "provider": None, "model": None,
+                    "coverage": "full", "guidance": "dig", "max_llm_calls": 6}

@@ -1,3 +1,4 @@
+import base64
 import io
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -103,6 +104,70 @@ def test_get_documents_lists_library_with_corpora_chips(tmp_path, monkeypatch):
         assert row["filename"] == "contract.pdf"
         assert {c["name"] for c in row["corpora"]} == {"alpha", "beta"}
         assert "rating" in row                   # present (None pre-index in unit tests)
+    finally:
+        api.app.dependency_overrides.clear()
+
+
+def test_library_list_exposes_origin(tmp_path, monkeypatch):
+    # Stage D: the global library list (GET /documents, hand-built
+    # LibraryDocumentRead rows) must carry provenance -- a generated doc shows
+    # its origin + the "[generated: ...]" label, formula owned entirely by
+    # db.Document.origin_label / provenance.origin_label.
+    enqueued: list[int] = []
+    client = _client(tmp_path, monkeypatch, enqueued)
+    try:
+        b64 = base64.b64encode(b"gen draft bytes").decode()
+        did = client.post("/documents/ingest",
+                          json={"filename": "g.md", "content_b64": b64}).json()["id"]
+        with db.SessionLocal() as s:
+            d = s.get(db.Document, did)
+            d.origin = "generated"
+            d.origin_meta = {"goal": "find_vuln", "version": 2}
+            s.commit()
+        rows = client.get("/documents").json()
+        row = next(r for r in rows if r["id"] == did)
+        assert row["origin"] == "generated"
+        assert row["origin_label"] == "[generated: find_vuln v2]"
+    finally:
+        api.app.dependency_overrides.clear()
+
+
+def test_document_detail_exposes_origin(tmp_path, monkeypatch):
+    # GET /documents/{id} (hand-built DocumentDetailRead) - a plain source
+    # upload shows the "source" default and no label.
+    enqueued: list[int] = []
+    client = _client(tmp_path, monkeypatch, enqueued)
+    try:
+        b64 = base64.b64encode(b"plain source").decode()
+        did = client.post("/documents/ingest",
+                          json={"filename": "s.txt", "content_b64": b64}).json()["id"]
+        row = client.get(f"/documents/{did}").json()
+        assert row["origin"] == "source"
+        assert row["origin_label"] == ""
+    finally:
+        api.app.dependency_overrides.clear()
+
+
+def test_corpus_list_documents_exposes_origin(tmp_path, monkeypatch):
+    # GET /corpora/{id}/documents returns ORM rows straight through DocumentRead
+    # (from_attributes) - confirm the property is readable via that path too.
+    enqueued: list[int] = []
+    client = _client(tmp_path, monkeypatch, enqueued)
+    try:
+        a = client.post("/corpora", json={"name": "alpha"}).json()["id"]
+        b64 = base64.b64encode(b"gen in corpus").decode()
+        did = client.post("/documents/ingest",
+                          json={"filename": "g2.md", "content_b64": b64,
+                                "corpus": "alpha"}).json()["id"]
+        with db.SessionLocal() as s:
+            d = s.get(db.Document, did)
+            d.origin = "generated"
+            d.origin_meta = {"goal": "audit", "version": 1}
+            s.commit()
+        rows = client.get(f"/corpora/{a}/documents").json()
+        row = next(r for r in rows if r["id"] == did)
+        assert row["origin"] == "generated"
+        assert row["origin_label"] == "[generated: audit v1]"
     finally:
         api.app.dependency_overrides.clear()
 

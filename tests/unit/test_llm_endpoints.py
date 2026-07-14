@@ -81,7 +81,8 @@ def test_resolve_binds_endpoint_creds(session, monkeypatch):
                                is_default=True)); session.commit()
 
     captured = {}
-    def fake_complete(messages, provider, model, settings, stream=False):
+    def fake_complete(messages, provider, model, settings, stream=False,
+                      reasoning_effort=None):
         captured.update(provider=provider, model=model,
                         api_base=settings.llm_api_base, api_key=settings.llm_api_key)
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ctx"))])
@@ -111,7 +112,7 @@ def test_resolve_llm_responses_flavor_uses_respond(session, monkeypatch):
     session.commit()
 
     captured = {}
-    def fake_respond(input_data, provider, model, settings):
+    def fake_respond(input_data, provider, model, settings, reasoning_effort=None):
         captured.update(input_data=input_data, provider=provider, model=model,
                         api_base=settings.llm_api_base, api_key=settings.llm_api_key)
         return "R-TEXT"
@@ -220,3 +221,173 @@ def test_seed_name_matches_endpoint_name_pattern():
             supports_text=True,
             supports_vision=True
         )
+
+
+def test_endpoint_budget_resolves_metadata(session):
+    session.add(db.LlmEndpoint(name="granite", provider="openai",
+                               model="granite-4", api_base="u",
+                               source_chars_budget=16000,
+                               context_window_tokens=8192))
+    session.commit()
+    # (source_chars_budget, context_window_tokens) - budget first, matching the
+    # order alchemy_exec unpacks (it only needs the source budget).
+    assert llm_endpoints.endpoint_budget(session, "openai", "granite-4") == (16000, 8192)
+
+
+def test_endpoint_budget_none_when_row_has_no_metadata(session):
+    session.add(db.LlmEndpoint(name="plain", provider="openai", model="m",
+                               api_base="u"))
+    session.commit()
+    assert llm_endpoints.endpoint_budget(session, "openai", "m") == (None, None)
+
+
+def test_endpoint_budget_unknown_provider_model_returns_none(session):
+    session.add(db.LlmEndpoint(name="plain", provider="openai", model="m",
+                               api_base="u", source_chars_budget=9000))
+    session.commit()
+    # no row matches -> (None, None), never a partial/other-row value.
+    assert llm_endpoints.endpoint_budget(session, "nope", "nope") == (None, None)
+
+
+def test_endpoint_budget_prefers_default_row_when_multiple_match(session):
+    # Two rows share (provider, model); the default one wins so the budget
+    # tracks the endpoint a run would actually resolve to.
+    session.add_all([
+        db.LlmEndpoint(name="a", provider="openai", model="m", api_base="u",
+                       source_chars_budget=1000, is_default=False),
+        db.LlmEndpoint(name="b", provider="openai", model="m", api_base="u",
+                       source_chars_budget=2000, is_default=True),
+    ])
+    session.commit()
+    assert llm_endpoints.endpoint_budget(session, "openai", "m") == (2000, None)
+
+
+def test_reasoning_effort_column_roundtrips(tmp_path):
+    from madosho_server import db
+    db.configure_engine(f"sqlite:///{tmp_path/'re.db'}")
+    db.create_all()
+    with db.SessionLocal() as s:
+        s.add(db.LlmEndpoint(name="codex", provider="openai", model="gpt-5.6-sol",
+                             api_base="http://h/v1", reasoning_effort="low"))
+        s.add(db.LlmEndpoint(name="legacy", provider="openai", model="m",
+                             api_base="http://h/v1"))
+        s.commit()
+    with db.SessionLocal() as s:
+        rows = {r.name: r for r in s.query(db.LlmEndpoint).all()}
+        assert rows["codex"].reasoning_effort == "low"
+        assert rows["legacy"].reasoning_effort is None   # nullable, defaults to unset
+
+
+def test_resolve_llm_binds_endpoint_reasoning_effort(tmp_path, monkeypatch):
+    from madosho_server import db, llm, llm_endpoints
+    from madosho_server.settings import Settings
+    db.configure_engine(f"sqlite:///{tmp_path/'re2.db'}")
+    db.create_all()
+    with db.SessionLocal() as s:
+        s.add(db.LlmEndpoint(name="codex", provider="openai", model="m",
+                             api_base="http://h/v1", is_default=True,
+                             reasoning_effort="low"))
+        s.commit()
+        settings = Settings(database_url="sqlite://", qdrant_url="",
+                            filestore_dir="", corpora_dir="")
+        captured = {}
+        monkeypatch.setattr(
+            llm, "completion",
+            lambda **kw: (captured.update(kw),
+                          __import__("types").SimpleNamespace(
+                              choices=[__import__("types").SimpleNamespace(
+                                  message=__import__("types").SimpleNamespace(
+                                      content="ok"))]))[1])
+        call, row = llm_endpoints.resolve_llm(s, settings)
+        call("hello")
+        assert captured["reasoning_effort"] == "low"
+
+
+def test_endpoint_reasoning_effort_lookup(tmp_path):
+    from madosho_server import db, llm_endpoints
+    db.configure_engine(f"sqlite:///{tmp_path/'re3.db'}")
+    db.create_all()
+    with db.SessionLocal() as s:
+        s.add(db.LlmEndpoint(name="a", provider="openai", model="m",
+                             api_base="u", is_default=True, reasoning_effort="low"))
+        s.add(db.LlmEndpoint(name="b", provider="openai", model="other",
+                             api_base="u"))
+        s.commit()
+        assert llm_endpoints.endpoint_reasoning_effort(s, "openai", "m") == "low"
+        assert llm_endpoints.endpoint_reasoning_effort(s, "openai", "other") is None
+        assert llm_endpoints.endpoint_reasoning_effort(s, "nope", "nope") is None
+
+
+# ---- per-model reasoning ladders + upstream model listing ------------------
+
+def test_reasoning_ladder_by_version():
+    # longest-prefix wins: the 5.6 family adds max; 5.5/5.4/5.3 top out at xhigh;
+    # an unrecognised gpt-5.x still gets the generic ladder.
+    assert llm_endpoints.reasoning_ladder("gpt-5.6-sol") == (
+        ["none", "low", "medium", "high", "xhigh", "max"], "medium")
+    assert llm_endpoints.reasoning_ladder("gpt-5.5") == (
+        ["none", "low", "medium", "high", "xhigh"], "medium")
+    assert llm_endpoints.reasoning_ladder("gpt-5.4-mini") == (
+        ["none", "low", "medium", "high", "xhigh"], "medium")
+    assert llm_endpoints.reasoning_ladder("gpt-5.3-codex-spark") == (
+        ["none", "low", "medium", "high", "xhigh"], "medium")
+    assert llm_endpoints.reasoning_ladder("gpt-5.1") == (
+        ["none", "low", "medium", "high", "xhigh"], "medium")
+
+
+def test_reasoning_ladder_empty_for_review_and_unknown():
+    # codex-auto-review is a fixed-preset model; non-reasoning + unknown models
+    # expose no effort control (empty ladder, no default).
+    assert llm_endpoints.reasoning_ladder("codex-auto-review") == ([], None)
+    assert llm_endpoints.reasoning_ladder("gemma-4-e4b") == ([], None)
+    assert llm_endpoints.reasoning_ladder("") == ([], None)
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+    def raise_for_status(self):
+        pass
+    def json(self):
+        return self._payload
+
+
+def test_endpoint_models_lists_upstream_with_ladders(session, monkeypatch):
+    monkeypatch.setenv("CK", "k")
+    row = db.LlmEndpoint(name="codex", provider="openai", model="gpt-5.5",
+                         api_base="http://proxy:10531/v1", key_env_var="CK",
+                         is_default=True, api_flavor="responses")
+    session.add(row); session.commit()
+
+    captured = {}
+    def fake_get(url, headers=None, timeout=None):
+        captured.update(url=url, headers=headers, timeout=timeout)
+        return _FakeResp({"data": [{"id": "gpt-5.6-sol"}, {"id": "gpt-5.5"},
+                                   {"id": "codex-auto-review"}, {"id": None}, {}]})
+    monkeypatch.setattr(llm_endpoints.httpx, "get", fake_get)
+
+    out = llm_endpoints.endpoint_models(BASE, row)
+    # bound to the endpoint's OWN api_base + key
+    assert captured["url"] == "http://proxy:10531/v1/models"
+    assert captured["headers"]["Authorization"] == "Bearer k"
+    # non-string / empty ids dropped; each surviving model carries its ladder
+    assert [m["id"] for m in out] == ["gpt-5.6-sol", "gpt-5.5", "codex-auto-review"]
+    assert out[0]["reasoning_efforts"][-1] == "max"      # 5.6 -> max
+    assert out[0]["default_effort"] == "medium"
+    assert out[1]["reasoning_efforts"][-1] == "xhigh"    # 5.5 -> xhigh
+    assert out[2]["reasoning_efforts"] == [] and out[2]["default_effort"] is None
+
+
+def test_endpoint_models_falls_back_to_pinned_model_on_upstream_error(session, monkeypatch):
+    import httpx
+    row = db.LlmEndpoint(name="gemma", provider="openai", model="gemma-4-e4b",
+                         api_base="http://h:8081/v1", is_default=True)
+    session.add(row); session.commit()
+
+    def boom(*a, **k):
+        raise httpx.ConnectError("down")
+    monkeypatch.setattr(llm_endpoints.httpx, "get", boom)
+
+    # upstream unreachable -> the caller still gets the endpoint's pinned model
+    assert llm_endpoints.endpoint_models(BASE, row) == [
+        {"id": "gemma-4-e4b", "reasoning_efforts": [], "default_effort": None}]

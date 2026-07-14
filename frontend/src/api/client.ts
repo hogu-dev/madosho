@@ -1,4 +1,4 @@
-import type { Artifacts, AuthMe, Comparison, Components, Corpus, CorpusMember, CreatedPipeline, Cube, DocPipeline, Document, EvalLaunch, EvalRun, ExtractDiff, ExtractDivergence, Job, LibraryDocument, LlmEndpoint, LlmEndpointInput, PipelineConfig, PipelineCreate, Proposal, QueryResult, RatingsConfig, RecommendedPipeline, ResearchLaunch, ResearchRun, UserRow, VirtualModel } from "./types";
+import type { AlchemyGoal, AlchemyGoalInput, AlchemyRun, AlchemyRunLaunch, AlchemyRunSummary, Artifacts, AuthMe, Comparison, Components, Corpus, CorpusMember, CreatedPipeline, Cube, DocPipeline, Document, EndpointModel, EvalLaunch, EvalRun, ExtractDiff, ExtractDivergence, Job, LibraryDocument, LlmEndpoint, LlmEndpointInput, PipelineConfig, PipelineCreate, Proposal, QueryResult, RatingsConfig, RecommendedPipeline, ResearchLaunch, ResearchRun, UserRow, VirtualModel } from "./types";
 
 export type ApiKeyRow = {
   name: string; prefix: string; scope: "read" | "write" | "admin";
@@ -49,6 +49,19 @@ export const api = {
     return req<Document>(`/corpora/${corpusId}/documents`, { method: "POST", body: fd });
   },
   listLibraryDocuments: () => req<LibraryDocument[]>("/documents"),
+  // Import a whole llmkb KB as one document. Delivered EITHER as a zip
+  // (archive) OR as the folder's files (each with its relative path, e.g. from a
+  // directory picker); the server packs it. Optional corpus adds membership.
+  importKb: (opts: { archive?: File; folder?: { file: File; path: string }[]; corpus?: string }) => {
+    const fd = new FormData();
+    if (opts.archive) fd.append("archive", opts.archive);
+    for (const { file, path } of opts.folder ?? []) {
+      fd.append("files", file);
+      fd.append("paths", path);
+    }
+    if (opts.corpus) fd.append("corpus", opts.corpus);
+    return req<Document>("/documents/import-kb", { method: "POST", body: fd });
+  },
   listJobs: () => req<Job[]>("/jobs"),
   createDocument: (file: File,
     recipe?: { parser?: string; chunker?: string; embedder?: string; name?: string;
@@ -95,6 +108,7 @@ export const api = {
   deleteVirtualModel: (id: number) => req<void>(`/virtual-models/${id}`, { method: "DELETE" }),
 
   listLlmEndpoints: () => req<LlmEndpoint[]>("/llm-endpoints"),
+  listEndpointModels: (id: number) => req<EndpointModel[]>(`/llm-endpoints/${id}/models`),
   createLlmEndpoint: (body: LlmEndpointInput) => req<LlmEndpoint>("/llm-endpoints", json(body)),
   updateLlmEndpoint: (id: number, body: LlmEndpointInput) =>
     req<LlmEndpoint>(`/llm-endpoints/${id}`, { ...json(body), method: "PUT" }),
@@ -147,6 +161,23 @@ export const api = {
     req<Proposal>(`/corpora/${corpusId}/proposal`).catch(() => null),
   dismissProposal: (proposalId: number) =>
     req<{ status: string }>(`/proposals/${proposalId}/dismiss`, { method: "POST" }),
+
+  // Alchemy: goals are created from the CLI or the Alchemy page's New-goal form;
+  // the UI also runs and views them.
+  listAlchemyGoals: () => req<AlchemyGoal[]>("/alchemy/goals"),
+  createAlchemyGoal: (body: AlchemyGoalInput) => req<AlchemyGoal>("/alchemy/goals", json(body)),
+  getAlchemyGoal: (ref: number | string) => req<AlchemyGoal>(`/alchemy/goals/${ref}`),
+  listAlchemyRuns: (ref: number | string) =>
+    req<AlchemyRunSummary[]>(`/alchemy/goals/${ref}/runs`),
+  getAlchemyRun: (ref: number | string, version: number) =>
+    req<AlchemyRun>(`/alchemy/goals/${ref}/runs/${version}`),
+  launchAlchemyRun: (ref: number | string, body: AlchemyRunLaunch) =>
+    req<AlchemyRun>(`/alchemy/goals/${ref}/runs`, json(body)),
+  // Cancel takes the run's DB id (AlchemyRunSummary.id), NOT the version number.
+  cancelAlchemyRun: (runId: number) =>
+    req<{ status: string }>(`/alchemy/runs/${runId}/cancel`, { method: "POST" }),
+  finalizeAlchemyRun: (ref: number | string, version: number, ingest = false) =>
+    req<AlchemyRun>(`/alchemy/goals/${ref}/finalize`, json({ version, ingest })),
 
   login: (key: string) => req<{ scope: string; name: string }>("/auth/login", json({ key })),
   loginPassword: (username: string, password: string) =>

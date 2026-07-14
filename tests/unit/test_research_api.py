@@ -118,3 +118,20 @@ def test_cancel_404_missing(tmp_path):
     client, _ = _client(tmp_path)
     r = client.post("/research/9999/cancel")
     assert r.status_code == 404
+
+
+def test_research_launch_reasoning_effort_override(tmp_path):
+    db.configure_engine(f"sqlite:///{tmp_path/'rr.db'}"); db.create_all()
+    client = TestClient(api.app)
+    with db.SessionLocal() as s:
+        c = db.Corpus(name="c"); s.add(c)
+        s.add(db.LlmEndpoint(name="codex", provider="openai", model="m",
+                             api_base="u", is_default=True, reasoning_effort="low"))
+        s.commit(); cid = c.id
+    r = client.post(f"/corpora/{cid}/research",
+                    json={"prompt": "q", "llm": {"provider": "openai", "model": "m"},
+                          "reasoning_effort": "medium"})
+    assert r.status_code in (200, 201), r.text
+    with db.SessionLocal() as s:
+        run = s.query(db.ResearchRun).first()
+        assert run.config["llm"]["reasoning_effort"] == "medium"

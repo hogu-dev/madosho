@@ -29,7 +29,7 @@ when it runs elsewhere):
 docker compose exec app python -m madosho_server.keys_cli create --name agent --scope read
 export MADOSHO_API_KEY=<the key it prints>
 export MADOSHO_QUERY_URL=http://madosho-host:8001     # search, search-doc
-export MADOSHO_CONTROL_URL=http://madosho-host:8000   # get-doc, list-corpora/documents/pipelines
+export MADOSHO_CONTROL_URL=http://madosho-host:8000   # get-doc, list-*, alchemy goal tools
 ```
 
 ### 2. Install the skills into your project
@@ -224,7 +224,7 @@ Both skills drive `madosho-cli`, which reads:
 | Variable              | Default                   | Used for                       |
 |-----------------------|---------------------------|--------------------------------|
 | MADOSHO_QUERY_URL     | http://localhost:8001     | search, search-doc             |
-| MADOSHO_CONTROL_URL   | http://localhost:8000     | get-doc, list-corpora/docs/pipelines |
+| MADOSHO_CONTROL_URL   | http://localhost:8000     | get-doc, list-corpora/docs/pipelines, alchemy goal tools |
 | MADOSHO_API_KEY       | (none)                    | Bearer key on every call (auth is on by default) |
 
 `research_trigger.py` uses `MADOSHO_CONTROL_URL` (default `http://localhost:8000`)

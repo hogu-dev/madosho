@@ -132,6 +132,8 @@ def list_documents(corpus: str) -> dict[str, Any]:
             "filename": d["filename"],
             "status": d["status"],
             "selected_pipeline_id": d.get("selected_pipeline_id"),
+            "origin": d.get("origin", "source"),
+            "origin_label": d.get("origin_label", ""),
         }
         for d in rows
     ]
@@ -147,21 +149,27 @@ def _run_query(payload: dict[str, Any], top_k: int) -> dict[str, Any]:
 
 
 def search(corpus: str, query: str, top_k: int = 8,
-           pipeline: str | None = None) -> dict[str, Any]:
+           pipeline: str | None = None,
+           include_generated: bool = True) -> dict[str, Any]:
     payload: dict[str, Any] = {"corpus": corpus, "prompt": query}
     if pipeline:
         payload["pipelines"] = [pipeline]
+    if not include_generated:
+        payload["include_generated"] = False
     return _run_query(payload, top_k)
 
 
 def search_document(document_id: int, query: str, top_k: int = 8,
-                    pipeline: str | None = None) -> dict[str, Any]:
+                    pipeline: str | None = None,
+                    include_generated: bool = True) -> dict[str, Any]:
     # RAG over a single document. The query plane accepts document_id in place of
     # corpus (exactly one of the two), so the only difference from search() is the
     # scope key - same ranked, cited hits come back.
     payload: dict[str, Any] = {"document_id": document_id, "prompt": query}
     if pipeline:
         payload["pipelines"] = [pipeline]
+    if not include_generated:
+        payload["include_generated"] = False
     return _run_query(payload, top_k)
 
 
@@ -273,6 +281,147 @@ def wait_for_document(
             raise http.CliError(
                 f"timed out after {timeout}s waiting for document {document_id}"
             )
+        time.sleep(interval)
+
+
+def alchemy_create(name: str, corpus: str, spec: dict[str, Any],
+                   goal_type: str = "living-research",
+                   coverage: str = "search",
+                   include_generated: bool = False) -> dict[str, Any]:
+    payload = {"name": name, "corpus_id": _resolve_corpus_id(corpus),
+               "goal_type": goal_type, "spec": spec, "coverage": coverage}
+    if include_generated:
+        payload["include_generated"] = True
+    return http.post_json(f"{http.control_base()}/alchemy/goals", payload)
+
+
+def alchemy_run(ref: str, provider: str | None = None, model: str | None = None,
+                *, coverage: str | None = None,
+                guidance: str | None = None, based_on_version: int | None = None,
+                budget_chars: int = 100_000, max_rounds: int = 8,
+                max_llm_calls: int | None = None,
+                fresh_coverage: bool = False,
+                concurrency: int = 1,
+                reasoning_effort: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"budget_chars": budget_chars,
+                               "max_rounds": max_rounds,
+                               "concurrency": concurrency}
+    if provider is not None or model is not None:
+        payload["llm"] = {"provider": provider, "model": model}
+    # else: NO llm key at all -> the server resolves its default LLM endpoint
+    # (the pinned wire shape; sending {'provider': None} would 400 as a
+    # partial pair)
+    if coverage:
+        payload["coverage"] = coverage
+    if guidance:
+        payload["guidance"] = guidance
+    if based_on_version is not None:
+        payload["based_on_version"] = based_on_version
+    if max_llm_calls is not None:
+        payload["max_llm_calls"] = max_llm_calls
+    payload["fresh_coverage"] = fresh_coverage
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
+    return http.post_json(
+        f"{http.control_base()}/alchemy/goals/{ref}/runs", payload)
+
+
+def alchemy_list_goals() -> list[dict[str, Any]]:
+    return http.get_json(f"{http.control_base()}/alchemy/goals")
+
+
+def alchemy_list_runs(ref: str) -> list[dict[str, Any]]:
+    return http.get_json(f"{http.control_base()}/alchemy/goals/{ref}/runs")
+
+
+def alchemy_get_run(ref: str, version: int) -> dict[str, Any]:
+    return http.get_json(
+        f"{http.control_base()}/alchemy/goals/{ref}/runs/{version}")
+
+
+def alchemy_list_artifacts(ref: str, version: int) -> list[dict[str, Any]]:
+    return http.get_json(
+        f"{http.control_base()}/alchemy/goals/{ref}/runs/{version}/artifacts")
+
+
+def alchemy_finalize(ref: str, version: int,
+                     ingest: bool = False) -> dict[str, Any]:
+    body: dict[str, Any] = {"version": version}
+    if ingest:
+        body["ingest"] = True
+    return http.post_json(
+        f"{http.control_base()}/alchemy/goals/{ref}/finalize", body)
+
+
+def alchemy_ingest(ref: str, version: int,
+                   corpus: str | None = None) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    if corpus:
+        body["corpus"] = corpus
+    return http.post_json(
+        f"{http.control_base()}/alchemy/goals/{ref}/runs/{version}/ingest", body)
+
+
+def alchemy_cancel(run_id: int) -> dict[str, Any]:
+    return http.post_json(f"{http.control_base()}/alchemy/runs/{run_id}/cancel", {})
+
+
+def alchemy_latest_version(ref: str) -> int | None:
+    """Version number of a goal's newest run, or None if it has none."""
+    runs = alchemy_list_runs(ref)
+    return runs[0]["version"] if runs else None
+
+
+def alchemy_export_run(ref: str, version: int | None = None) -> dict[str, Any]:
+    """Slim agent-facing view of one run: the draft text plus a section summary.
+
+    Deliberately NOT the whole run row: run_log, the coverage ledger, and the
+    full citation rows are dropped (agents want the words; humans use
+    `alchemy export` for files and `alchemy status` for diagnostics).
+    Confidence dicts pass through untouched. version=None means the latest run.
+    """
+    if version is None:
+        version = alchemy_latest_version(ref)
+        if version is None:
+            raise http.CliError(f"no runs for goal {ref}")
+    run = alchemy_get_run(ref, version)
+    return {
+        "goal": ref,
+        "version": run.get("version", version),
+        "status": run.get("status"),
+        "is_final": bool(run.get("is_final", False)),
+        "stop_reason": run.get("stop_reason"),
+        "draft_markdown": run.get("draft_markdown") or "",
+        "sections": [
+            {"key": s.get("key", ""), "title": s.get("title", ""),
+             "filled": bool(s.get("filled", False)),
+             "confidence": s.get("confidence") or {}}
+            for s in (run.get("sections") or [])
+        ],
+        "citations": len(run.get("citations") or []),
+    }
+
+
+_ALCHEMY_TERMINAL = {"done", "failed", "cancelled"}
+
+
+def wait_for_alchemy_run(ref: str, version: int, *, on_event, interval: float = 3.0,
+                         timeout: float = 1800.0) -> dict[str, Any]:
+    """Poll a run until it reaches a terminal status (mirrors wait_for_pipeline).
+
+    on_event receives the full run dict each poll (same contract as
+    wait_for_document/wait_for_pipeline, so _on_event_printer works unchanged -
+    it reads "status" and "progress" off the top-level dict).
+    Raises CliError on timeout.
+    """
+    start = time.monotonic()
+    while True:
+        run = alchemy_get_run(ref, version)
+        on_event(run)
+        if run.get("status") in _ALCHEMY_TERMINAL:
+            return run
+        if time.monotonic() - start >= timeout:
+            raise http.CliError(f"timed out waiting for run {ref} v{version}")
         time.sleep(interval)
 
 

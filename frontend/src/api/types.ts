@@ -239,6 +239,7 @@ export interface ResearchLaunch {
   budget_chars: number;
   max_rounds: number;
   llm: { provider: string; model: string };
+  reasoning_effort?: string;   // omitted -> the endpoint's own default
 }
 
 export interface CorpusChip { id: number; name: string; }
@@ -281,12 +282,25 @@ export interface LlmEndpoint {
   api_base: string; key_env_var: string | null; is_default: boolean; key_present: boolean;
   supports_text: boolean; supports_vision: boolean; is_vision_default: boolean;
   api_flavor: ApiFlavor;
+  context_window_tokens: number | null; source_chars_budget: number | null;
+  reasoning_effort: string | null;
 }
+// A model an endpoint's upstream serves, with the reasoning-effort levels it
+// accepts (empty = no effort control beyond the endpoint default). Drives the
+// launch forms' model dropdown + the adjacent, per-model Reasoning dropdown.
+export interface EndpointModel {
+  id: string;
+  reasoning_efforts: string[];
+  default_effort: string | null;
+}
+
 export interface LlmEndpointInput {
   name: string; provider: string; model: string;
   api_base: string; key_env_var: string | null;
   supports_text: boolean; supports_vision: boolean;
   api_flavor: ApiFlavor;
+  context_window_tokens: number | null; source_chars_budget: number | null;
+  reasoning_effort: string | null;
 }
 
 export type AuthMe = {
@@ -305,3 +319,143 @@ export type UserRow = {
   created_at: string | null;
   last_login_at: string | null;
 };
+
+// ---- Alchemy: named/versioned autonomous goals over a corpus ----------------
+// Goals are created via the CLI (madosho alchemy create); the web UI is a
+// viewer with light actions (run / cancel / finalize).
+
+export interface AlchemyGoal {
+  id: number;
+  name: string;
+  corpus_id: number;
+  goal_type: string;                       // e.g. living-research | report
+  spec: Record<string, unknown>;
+  coverage: "search" | "full" | "exhaustive";
+  include_generated: boolean;
+  created_at: string | null;
+}
+// POST /alchemy/goals body. spec shape is goal-type specific: living-research
+// carries { goal }, report carries { template } (markdown headings) and an
+// optional { goal } preamble. The server compiles+validates it (400 on a bad spec).
+export interface AlchemyGoalInput {
+  name: string;
+  corpus_id: number;
+  goal_type: string;
+  spec: Record<string, unknown>;
+  coverage: "search" | "full" | "exhaustive";
+  include_generated?: boolean;
+}
+
+export interface AlchemyUsage {
+  llm_calls?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}
+
+export type AlchemyRunStatus = "pending" | "running" | "done" | "failed" | "cancelled";
+
+// One row of a goal's runs table (GET /alchemy/goals/{ref}/runs, version desc).
+export interface AlchemyRunSummary {
+  id: number;                              // DB run id -- cancel takes THIS, not the version
+  goal_id: number;
+  version: number;
+  status: AlchemyRunStatus;
+  coverage: string;
+  guidance: string | null;
+  based_on_version: number | null;
+  stop_reason: string | null;              // final|round_cap|no_tools_used|cancelled|failed|call_cap
+  usage: AlchemyUsage | null;
+  is_final: boolean;
+  ingested_document_id: number | null;     // set once a draft is ingested back
+  error: string | null;
+  created_at: string | null;
+  finished_at: string | null;
+}
+
+export interface AlchemySectionConfidence {
+  level: "low" | "medium" | "high";
+  self_grade?: number | null;
+  distinct_docs?: number;
+  citations?: number;
+  coverage_complete?: boolean;
+}
+
+export interface AlchemySection {
+  key: string;
+  title: string;
+  content: string;
+  filled: boolean;
+  note?: string | null;                    // why a section stayed unfilled
+  confidence?: AlchemySectionConfidence | null;
+  stop_reason?: string | null;
+  llm_calls?: number;
+}
+
+// Coverage ledger: which corpus docs the run consulted and how.
+export interface AlchemyLedger {
+  mode: string;
+  total_docs: number | null;   // null when the corpus doc list could not be resolved
+
+  consulted: Record<string, "search" | "forced" | "read">;
+  from_prior: number[];
+  unconsulted: number[];
+  failures: Record<string, string>;
+  complete: boolean | null;   // null in search mode: coverage-complete is not a promise it makes
+  shortfall?: string | null;               // honest-shortfall note when coverage fell short
+  summary?: string | null;
+}
+
+export interface AlchemyCitation {
+  document_id: number | null;
+  pipeline_id: number | null;
+  pipeline: string | null;
+  position: number | null;
+  citation: string;
+  source: string | null;
+  score: number | null;
+  quote: string;
+}
+
+// Full run payload (single-run GET / launch / finalize responses).
+// One row of the research loop's activity trace. A `tool_call` is an agent/tool
+// the model invoked (search, get-doc, ...) with its args + result; an `llm` row
+// marks a model turn (whether it called tools, and how much text it produced -
+// the verbatim prose is not stored, only the final draft is). Alchemy tags each
+// entry with the report `section` it belongs to.
+export interface AlchemyLogEntry {
+  round?: number;
+  section?: string;
+  kind?: "llm" | "tool_call";
+  name?: string;                      // tool_call: the agent/tool name
+  args?: Record<string, unknown>;     // tool_call: its arguments (e.g. the query)
+  ok?: boolean;
+  error?: string | null;
+  chars?: number;                     // tool_call: result size fed to the model
+  note?: string | null;               // e.g. "truncated to fit context budget"
+  has_tool_calls?: boolean;           // llm turn: did it call tools this round
+  text_chars?: number;                // llm turn: chars of prose it produced
+  text?: string;                      // llm turn: bounded preview of that prose
+}
+export interface AlchemyRun extends AlchemyRunSummary {
+  draft_markdown: string | null;
+  citations: AlchemyCitation[] | null;
+  run_log: AlchemyLogEntry[] | null;
+  sections: AlchemySection[] | null;
+  ledger: AlchemyLedger | null;
+  artifact_counts: Record<string, number> | null;
+  progress: { phase?: string } | null;
+}
+
+export interface AlchemyRunLaunch {
+  coverage?: "search" | "full" | "exhaustive";   // omitted = the goal's own coverage
+  guidance?: string;
+  based_on_version?: number;
+  fresh_coverage?: boolean;
+  llm: { provider: string; model: string };
+  budget_chars?: number;
+  max_rounds?: number;
+  max_llm_calls?: number;
+  concurrency?: number;   // 1-8; a parallel stage-E slice adds it server-side (default 1)
+  reasoning_effort?: string;   // omitted -> the endpoint's own default
+}

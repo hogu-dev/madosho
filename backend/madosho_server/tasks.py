@@ -110,6 +110,13 @@ def _is_research_cancelled(session, run_id: int) -> bool:
     return run is not None and run.status == "cancelled"
 
 
+def _is_alchemy_cancelled(session, run_id: int) -> bool:
+    # re-read from the DB so an external cancel (different session) is visible
+    session.expire_all()
+    run = session.get(db.AlchemyRun, run_id)
+    return run is not None and run.status == "cancelled"
+
+
 def _finish(session, run, status: str, error: str | None = None) -> None:
     run.status = status
     run.error = error
@@ -578,6 +585,22 @@ def run_research(research_run_id: int) -> None:
     _dispatch("research", "run_research", {"research_run_id": research_run_id})
 
 
+def _run_alchemy_impl(alchemy_run_id: int) -> None:
+    from madosho_server import alchemy_exec   # lazy: alchemy_exec imports tasks._finish
+    settings = Settings.from_env()
+    with db.SessionLocal() as session:
+        run = session.get(db.AlchemyRun, alchemy_run_id)
+        if run is None:
+            logger.warning("run_alchemy: no alchemy_run %s", alchemy_run_id)
+            return
+        alchemy_exec.execute_alchemy_run(session, alchemy_run_id, settings)
+
+
+@app.task(queue="alchemy", name="run_alchemy")
+def run_alchemy(alchemy_run_id: int) -> None:
+    _dispatch("alchemy", "run_alchemy", {"alchemy_run_id": alchemy_run_id})
+
+
 def _build_pipeline_impl(pipeline_id: int) -> None:
     """Build one already-created Pipeline row into its own collection. On failure,
     mark it failed and drop the partial collection (same discipline as ingest)."""
@@ -626,6 +649,7 @@ _IMPLS = {
     "run_extraction_comparison": _run_extraction_comparison_impl,
     "run_eval": _run_eval_impl,
     "run_research": _run_research_impl,
+    "run_alchemy": _run_alchemy_impl,
     "build_pipeline": _build_pipeline_impl,
 }
 

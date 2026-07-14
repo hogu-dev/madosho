@@ -37,3 +37,13 @@ def test_dependency_floors_are_tested_floors():
             (f"{req.name}: floor {floor} is not the tested series "
              f"{installed.major}.{installed.minor} — run the suite against the floor "
              f"or raise it to the tested version")
+
+
+def test_split_distributions_share_the_root_version():
+    """The three published distributions (madosho, madosho-cli, madosho-mcp) ship
+    in lockstep. A drifted client version means a user gets a mismatched pair."""
+    root_ver = tomllib.loads(PYPROJECT.read_text())["project"]["version"]
+    for sub in ("madosho-cli", "madosho-mcp"):
+        sub_pyproject = PYPROJECT.parent / "packaging" / sub / "pyproject.toml"
+        sub_ver = tomllib.loads(sub_pyproject.read_text())["project"]["version"]
+        assert sub_ver == root_ver, f"{sub} is {sub_ver}, root is {root_ver}"

@@ -5,10 +5,73 @@ import dataclasses
 import os
 from typing import Callable
 
+import httpx
 from sqlalchemy import select
 
 from madosho_server import db
 from madosho_server.llm import complete, respond
+
+
+# Per-model reasoning-effort ladders. An OpenAI-compatible /v1/models list
+# reports NO capability metadata (codex-proxy passes the backend's bare list
+# through byte-for-byte), so the valid efforts for a given model come from this
+# small maintained map, verified against OpenAI's current model docs. Match is
+# by longest name-prefix; a model with an empty ladder exposes no effort control
+# beyond the endpoint default (e.g. a non-reasoning model, or codex-auto-review).
+_REASONING_LADDERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("codex-auto-review", ()),                                         # fixed-preset review model
+    ("gpt-5.6", ("none", "low", "medium", "high", "xhigh", "max")),
+    ("gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
+    ("gpt-5.4", ("none", "low", "medium", "high", "xhigh")),
+    ("gpt-5.3", ("none", "low", "medium", "high", "xhigh")),
+    ("gpt-5", ("none", "low", "medium", "high", "xhigh")),             # generic gpt-5.x fallback
+)
+_DEFAULT_EFFORT = "medium"
+
+
+def reasoning_ladder(model: str) -> tuple[list[str], str | None]:
+    """(valid efforts, default effort) for a model name, by longest-prefix match.
+    A matched-but-empty ladder (codex-auto-review) and an unmatched model both
+    return ([], None): no effort control beyond the endpoint default."""
+    name = (model or "").lower()
+    best: tuple[str, ...] | None = None
+    best_len = -1
+    for prefix, efforts in _REASONING_LADDERS:
+        if name.startswith(prefix) and len(prefix) > best_len:
+            best, best_len = efforts, len(prefix)
+    if not best:
+        return [], None
+    return list(best), _DEFAULT_EFFORT
+
+
+def endpoint_models(settings, row: "db.LlmEndpoint") -> list[dict]:
+    """List the models this endpoint's upstream serves (GET {api_base}/models,
+    bearer-authed with the endpoint's OWN key), each annotated with its reasoning
+    ladder + default from reasoning_ladder(). Falls back to the endpoint's pinned
+    model when the upstream list is unreachable or empty, so the caller always
+    gets at least one selectable model."""
+    creds = endpoint_creds(settings, row)
+    ids: list[str] = []
+    if creds.llm_api_base:
+        headers = {}
+        if creds.llm_api_key:
+            headers["Authorization"] = f"Bearer {creds.llm_api_key}"
+        url = creds.llm_api_base.rstrip("/") + "/models"
+        try:
+            resp = httpx.get(url, headers=headers, timeout=6.0)
+            resp.raise_for_status()
+            data = resp.json().get("data") or []
+            ids = [m["id"] for m in data
+                   if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]]
+        except (httpx.HTTPError, ValueError, KeyError):
+            ids = []
+    if not ids and row.model:
+        ids = [row.model]
+    out: list[dict] = []
+    for mid in ids:
+        efforts, default = reasoning_ladder(mid)
+        out.append({"id": mid, "reasoning_efforts": efforts, "default_effort": default})
+    return out
 
 
 def endpoint_creds(settings, row):
@@ -30,17 +93,57 @@ def resolve_llm(session, settings, endpoint: "db.LlmEndpoint | None" = None):
         return None, None
     # Capture into locals so the closure is safe after the session closes.
     provider, model, flavor = row.provider, row.model, row.api_flavor
+    effort = row.reasoning_effort
     creds = endpoint_creds(settings, row)
 
     def _call(prompt: str) -> str:
         if flavor == "responses":
             # Responses-API servers take the bare prompt as input_data.
-            return respond(prompt, provider=provider, model=model, settings=creds)
+            return respond(prompt, provider=provider, model=model, settings=creds,
+                           reasoning_effort=effort)
         resp = complete(messages=[{"role": "user", "content": prompt}],
-                        provider=provider, model=model, settings=creds)
+                        provider=provider, model=model, settings=creds,
+                        reasoning_effort=effort)
         return resp.choices[0].message.content
 
     return _call, row
+
+
+def endpoint_budget(session, provider: str, model: str) -> tuple[int | None, int | None]:
+    """(source_chars_budget, context_window_tokens) for the registry row that
+    matches this provider+model, or (None, None) if no row / no metadata. The
+    alchemy path selects by (provider, model), not by name/default, because a
+    run stores a bare {provider, model} dict, never an endpoint id.
+
+    When several rows share the same (provider, model), the default row wins
+    (is_default DESC) so the budget tracks the endpoint a run would resolve to;
+    ties break by id (the first-created row). Returns the source budget FIRST
+    because that is the only value the alchemy adapter needs to size a run."""
+    rows = session.scalars(
+        select(db.LlmEndpoint)
+        .where(db.LlmEndpoint.provider == provider,
+               db.LlmEndpoint.model == model)
+        .order_by(db.LlmEndpoint.is_default.desc(), db.LlmEndpoint.id)
+    ).all()
+    if not rows:
+        return (None, None)
+    row = rows[0]
+    return (row.source_chars_budget, row.context_window_tokens)
+
+
+def endpoint_reasoning_effort(session, provider: str, model: str) -> str | None:
+    """The reasoning_effort default of the registry row matching (provider,
+    model), or None if no row / no value. Same row selection as endpoint_budget
+    (default row wins, then lowest id), so the effort tracks the endpoint a run
+    would resolve to. Used to freeze the endpoint default into a run's stored
+    config at launch when the launch sends no per-job override."""
+    row = session.scalars(
+        select(db.LlmEndpoint)
+        .where(db.LlmEndpoint.provider == provider,
+               db.LlmEndpoint.model == model)
+        .order_by(db.LlmEndpoint.is_default.desc(), db.LlmEndpoint.id)
+    ).first()
+    return row.reasoning_effort if row is not None else None
 
 
 def resolve_vision_endpoint(session, settings):
@@ -68,6 +171,7 @@ def resolve_vision_client(session, settings, endpoint: "db.LlmEndpoint | None" =
         return None, None
     # Capture into locals so the closure is safe after the session closes.
     provider, model, flavor = row.provider, row.model, row.api_flavor
+    effort = row.reasoning_effort
     creds = endpoint_creds(settings, row)
 
     def _call(prompt: str, images: list[bytes]) -> str:
@@ -80,14 +184,16 @@ def resolve_vision_client(session, settings, endpoint: "db.LlmEndpoint | None" =
                 parts.append({"type": "input_image", "detail": "auto",
                               "image_url": f"data:image/png;base64,{b64}"})
             return respond([{"role": "user", "content": parts}],
-                           provider=provider, model=model, settings=creds)
+                           provider=provider, model=model, settings=creds,
+                           reasoning_effort=effort)
         content: list[dict] = [{"type": "text", "text": prompt}]
         for png in images:
             b64 = base64.b64encode(png).decode("ascii")
             content.append({"type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{b64}"}})
         resp = complete(messages=[{"role": "user", "content": content}],
-                        provider=provider, model=model, settings=creds)
+                        provider=provider, model=model, settings=creds,
+                        reasoning_effort=effort)
         return resp.choices[0].message.content or ""
 
     return _call, row

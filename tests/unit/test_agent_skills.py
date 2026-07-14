@@ -30,7 +30,8 @@ def test_basic_skill_wellformed():
     assert len(front.get("description", "")) >= 30   # a real trigger description
     assert "madosho-cli" in body and "--json" in body
     for tool in ("search", "search-doc", "get-doc", "list-corpora",
-                 "list-documents", "list-pipelines"):
+                 "list-documents", "list-pipelines", "list-goals",
+                 "goal-runs", "export-goal-run", "run-goal"):
         assert tool in body, f"basic skill body must mention {tool}"
 
 

@@ -168,6 +168,36 @@ def test_invoke_unknown_tool_is_structured_error(fake_run):
     assert result.ok is False and "unknown tool" in result.error
 
 
+def test_invoke_before_manifest_auto_loads_the_recipe_table(fake_run):
+    """A DIRECT invoke() before manifest() was ever called self-heals: it loads
+    the recipe table on first use and runs the tool, instead of returning
+    'unknown tool'. This is the path the orchestrator's corpus-size lookup takes
+    (before any unit warms the manifest) - its failure left the coverage ledger
+    reporting 'size unknown'."""
+    hits = {"hits": [{"text": "t", "citation": "c", "document_id": 2}]}
+    fr = fake_run({"agent-tools": (0, json.dumps(MANIFEST), ""),
+                   "search": (0, json.dumps(hits), "")})
+    provider = CliToolProvider(["madosho-cli"])
+    # NO provider.manifest() here - invoke must warm it itself
+    result = provider.invoke("search", {"corpus": "aerospace", "query": "q"})
+    assert result.ok and result.data == hits
+    # it shelled `agent-tools` (the warm) before `search`
+    assert fr.calls[0] == ["madosho-cli", "agent-tools", "--json"]
+    assert fr.calls[-1][:2] == ["madosho-cli", "search"]
+
+
+def test_invoke_unknown_name_after_load_does_not_reshell(fake_run):
+    """Once the table is loaded, a genuinely unknown name fails fast without
+    re-running the manifest - the auto-load only fires on an empty table."""
+    fr = fake_run({"agent-tools": (0, json.dumps(MANIFEST), "")})
+    provider = CliToolProvider(["madosho-cli"])
+    provider.manifest()
+    calls_before = len(fr.calls)
+    result = provider.invoke("does-not-exist", {})
+    assert result.ok is False and "unknown tool" in result.error
+    assert len(fr.calls) == calls_before   # no extra agent-tools shell
+
+
 def test_invoke_missing_required_positional_is_structured_error(fake_run):
     """Omitting a required positional arg (corpus) must produce a structured error, not raise."""
     fake_run({"agent-tools": (0, json.dumps(MANIFEST), "")})
