@@ -14,12 +14,46 @@ from __future__ import annotations
 import json
 import time
 from typing import Any
+from urllib.parse import quote
 
 from . import http
 
 
 def create_corpus(name: str) -> dict[str, Any]:
     return http.post_json(f"{http.control_base()}/corpora", {"name": name})
+
+
+def create_kb(corpus: str, name: str) -> dict[str, Any]:
+    cid = _resolve_corpus_id(corpus)
+    return http.post_json(f"{http.control_base()}/corpora/{cid}/kbs", {"name": name})
+
+
+def list_kbs() -> list[dict[str, Any]]:
+    return http.get_json(f"{http.control_base()}/kbs")
+
+
+def get_kb_page(kb_id: int, slug: str) -> dict[str, Any]:
+    return http.get_json(f"{http.control_base()}/kbs/{kb_id}/pages/{slug}")
+
+
+def add_kb_page(kb_id: int, *, type: str, title: str, description: str = "",
+                tags: list[str] | None = None, sources: list | None = None,
+                body: str = "") -> dict[str, Any]:
+    return http.post_json(f"{http.control_base()}/kbs/{kb_id}/pages",
+        {"type": type, "title": title, "description": description,
+         "tags": tags or [], "sources": sources or [], "body": body})
+
+
+def edit_kb_page(kb_id: int, slug: str, *, description: str | None = None,
+                 tags: list[str] | None = None, sources: list | None = None,
+                 body: str | None = None) -> dict[str, Any]:
+    payload = {k: v for k, v in {"description": description, "tags": tags,
+               "sources": sources, "body": body}.items() if v is not None}
+    return http.put_json(f"{http.control_base()}/kbs/{kb_id}/pages/{slug}", payload)
+
+
+def search_kb(kb_id: int, query: str) -> list[dict[str, Any]]:
+    return http.get_json(f"{http.control_base()}/kbs/{kb_id}/search?q={quote(query)}")
 
 
 def upload_document(
