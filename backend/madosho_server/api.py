@@ -1120,7 +1120,12 @@ def create_kb(corpus_id: int, body: KbCreate, session: SessionDep,
         raise HTTPException(status_code=422, detail=str(exc))
     kb = db.Kb(corpus_id=corpus_id, name=name, slug=slug)
     session.add(kb)
-    session.flush()          # assign kb.id without committing yet
+    try:
+        session.flush()      # assign kb.id without committing yet
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(status_code=409,
+                            detail=f"a KB named '{name}' already exists in this corpus")
     try:
         kb_store.create_kb(settings.kb_dir, kb.id, name)
     except kb_store.KbStoreError as exc:
