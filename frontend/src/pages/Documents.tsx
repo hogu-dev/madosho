@@ -5,6 +5,7 @@ import type { LibraryDocument } from "../api/types";
 import { Button, Heading, Panel, StatusDot, MeterBar } from "../design/primitives";
 import { usePolling } from "../hooks/usePolling";
 import { UploadModal } from "./UploadModal";
+import { ImportKbModal } from "./ImportKbModal";
 import { ReconfigModal } from "./ReconfigModal";
 import { BuildConsole } from "./BuildConsole";
 import { useAuth } from "../auth/AuthContext";
@@ -22,6 +23,7 @@ export function Documents() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [importKbOpen, setImportKbOpen] = useState(false);
   const [reconfigDoc, setReconfigDoc] = useState<LibraryDocument | null>(null);
 
   const load = useCallback(async () => {
@@ -61,7 +63,11 @@ export function Documents() {
             Every source in madosho — indexed once, then shared across any corpus. A document carries
             its own pipelines; corpora only reference it.</p>
         </div>
-        <Button onClick={() => setUploadOpen(true)} disabled={!canWrite}>↑ Upload PDF</Button>
+        <div style={{ display: "flex", gap: 10, flexShrink: 0 }}>
+          <Button variant="ghost" onClick={() => setImportKbOpen(true)} disabled={!canWrite}>
+            ⧉ Import KB</Button>
+          <Button onClick={() => setUploadOpen(true)} disabled={!canWrite}>↑ Upload PDF</Button>
+        </div>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "22px 0 4px",
@@ -104,6 +110,7 @@ export function Documents() {
       )}
 
       <UploadModal open={uploadOpen} onClose={() => setUploadOpen(false)} onUploaded={load} />
+      <ImportKbModal open={importKbOpen} onClose={() => setImportKbOpen(false)} onImported={load} />
       <ReconfigModal open={reconfigDoc !== null} doc={reconfigDoc}
         onClose={() => setReconfigDoc(null)} onDone={load} />
     </Panel>

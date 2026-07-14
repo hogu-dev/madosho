@@ -400,3 +400,100 @@ def test_base64_ingest_uses_sanitized_default_pipeline_name(tmp_path, monkeypatc
         "Both transports must use default_pipeline_name(), not the raw filename."
     )
     assert got != "report.pdf", "pipeline name must not be the raw filename"
+
+
+# ---------------------------------------------------------------------------
+# POST /documents/import-kb (web KB import: zip OR folder files)
+# ---------------------------------------------------------------------------
+import io as _kbio
+import zipfile as _kbzip
+
+_KB_YAML = "name: demo-kb\nformat: 1\n"
+_KB_INDEX = "# Index\n"
+_KB_PAGE = ("---\ntype: concept\ntitle: Alpha\ndescription: d\n"
+            "tags: []\ntimestamp: 2026-07-11\nsources: []\n---\n\nAlpha body.\n")
+
+
+def _kb_zip(root="demo-kb"):
+    buf = _kbio.BytesIO()
+    with _kbzip.ZipFile(buf, "w") as z:
+        z.writestr(f"{root}/kb.yaml", _KB_YAML)
+        z.writestr(f"{root}/wiki/index.md", _KB_INDEX)
+        z.writestr(f"{root}/wiki/concepts/alpha.md", _KB_PAGE)
+    return buf.getvalue()
+
+
+def test_import_kb_zip_creates_document(tmp_path, monkeypatch):
+    api = _api(tmp_path, monkeypatch)
+    with TestClient(api.app) as client:
+        r = client.post("/documents/import-kb",
+                        files={"archive": ("kb.zip", _kb_zip(), "application/zip")})
+        assert r.status_code == 202, r.text
+        assert r.json()["filename"] == "demo-kb.md"
+
+
+def test_import_kb_folder_files_create_document(tmp_path, monkeypatch):
+    api = _api(tmp_path, monkeypatch)
+    with TestClient(api.app) as client:
+        files = [
+            ("files", ("kb.yaml", _KB_YAML.encode(), "text/plain")),
+            ("files", ("index.md", _KB_INDEX.encode(), "text/markdown")),
+            ("files", ("alpha.md", _KB_PAGE.encode(), "text/markdown")),
+        ]
+        data = {"paths": ["demo-kb/kb.yaml", "demo-kb/wiki/index.md",
+                          "demo-kb/wiki/concepts/alpha.md"]}
+        r = client.post("/documents/import-kb", files=files, data=data)
+        assert r.status_code == 202, r.text
+        assert r.json()["filename"] == "demo-kb.md"
+
+
+def test_import_kb_no_kb_yaml_is_400(tmp_path, monkeypatch):
+    api = _api(tmp_path, monkeypatch)
+    with TestClient(api.app) as client:
+        files = [("files", ("index.md", _KB_INDEX.encode(), "text/markdown"))]
+        r = client.post("/documents/import-kb", files=files,
+                        data={"paths": ["x/wiki/index.md"]})
+        assert r.status_code == 400
+        assert "kb.yaml" in r.json()["detail"]
+
+
+def test_import_kb_zip_slip_rejected(tmp_path, monkeypatch):
+    api = _api(tmp_path, monkeypatch)
+    buf = _kbio.BytesIO()
+    with _kbzip.ZipFile(buf, "w") as z:
+        z.writestr("demo-kb/kb.yaml", _KB_YAML)
+        z.writestr("../evil.md", "pwned")          # tries to escape the temp dir
+    with TestClient(api.app) as client:
+        r = client.post("/documents/import-kb",
+                        files={"archive": ("kb.zip", buf.getvalue(), "application/zip")})
+        assert r.status_code == 400
+        assert "unsafe" in r.json()["detail"]
+
+
+def test_import_kb_bad_zip_is_400(tmp_path, monkeypatch):
+    api = _api(tmp_path, monkeypatch)
+    with TestClient(api.app) as client:
+        r = client.post("/documents/import-kb",
+                        files={"archive": ("kb.zip", b"not a zip", "application/zip")})
+        assert r.status_code == 400
+
+
+def test_import_kb_with_corpus_creates_membership(tmp_path, monkeypatch):
+    api = _api(tmp_path, monkeypatch)
+    with TestClient(api.app) as client:
+        client.post("/corpora", json={"name": "kb"})
+        r = client.post("/documents/import-kb",
+                        files={"archive": ("kb.zip", _kb_zip(), "application/zip")},
+                        data={"corpus": "kb"})
+        assert r.status_code == 202, r.text
+        chips = client.get(f"/documents/{r.json()['id']}").json()["corpora"]
+        assert any(c["name"] == "kb" for c in chips)
+
+
+def test_import_kb_unknown_corpus_is_404(tmp_path, monkeypatch):
+    api = _api(tmp_path, monkeypatch)
+    with TestClient(api.app) as client:
+        r = client.post("/documents/import-kb",
+                        files={"archive": ("kb.zip", _kb_zip(), "application/zip")},
+                        data={"corpus": "does-not-exist"})
+        assert r.status_code == 404

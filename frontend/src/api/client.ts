@@ -49,6 +49,19 @@ export const api = {
     return req<Document>(`/corpora/${corpusId}/documents`, { method: "POST", body: fd });
   },
   listLibraryDocuments: () => req<LibraryDocument[]>("/documents"),
+  // Import a whole llmkb KB as one document. Delivered EITHER as a zip
+  // (archive) OR as the folder's files (each with its relative path, e.g. from a
+  // directory picker); the server packs it. Optional corpus adds membership.
+  importKb: (opts: { archive?: File; folder?: { file: File; path: string }[]; corpus?: string }) => {
+    const fd = new FormData();
+    if (opts.archive) fd.append("archive", opts.archive);
+    for (const { file, path } of opts.folder ?? []) {
+      fd.append("files", file);
+      fd.append("paths", path);
+    }
+    if (opts.corpus) fd.append("corpus", opts.corpus);
+    return req<Document>("/documents/import-kb", { method: "POST", body: fd });
+  },
   listJobs: () => req<Job[]>("/jobs"),
   createDocument: (file: File,
     recipe?: { parser?: string; chunker?: string; embedder?: string; name?: string;

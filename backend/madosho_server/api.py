@@ -7,11 +7,14 @@ import json
 import logging
 import mimetypes
 import os
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Callable, Literal
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import and_, delete, or_, select
@@ -1411,6 +1414,93 @@ def ingest_document(body: DocumentIngest, session: SessionDep, settings: Setting
                          corpus_id=corpus_id,
                          parser=body.parser, chunker=body.chunker, embedder=body.embedder,
                          name=None, options=body.options)
+
+
+_KB_IMPORT_CAP = 50 * 1024 * 1024   # 50 MB, matching the inline-ingest cap
+
+
+def _kb_write_member(base: Path, relpath: str, data: bytes) -> None:
+    """Write one uploaded KB member under base, rejecting absolute paths and any
+    traversal so a crafted archive/upload cannot escape the temp dir (zip-slip)."""
+    rel = PurePosixPath(relpath.replace("\\", "/"))
+    if rel.is_absolute() or any(part in ("", "..") for part in rel.parts):
+        raise HTTPException(status_code=400, detail=f"unsafe path in upload: {relpath!r}")
+    dest = (base / rel)
+    base_r = base.resolve()
+    if not str(dest.resolve()).startswith(str(base_r) + os.sep):
+        raise HTTPException(status_code=400, detail=f"unsafe path in upload: {relpath!r}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+
+
+def _find_kb_root(base: Path) -> Path:
+    """The shallowest directory under base that holds a kb.yaml (a zip/folder may
+    or may not wrap the KB in a top-level dir). 400 if none is found."""
+    matches = sorted(base.rglob("kb.yaml"), key=lambda p: len(p.parts))
+    if not matches:
+        raise HTTPException(status_code=400,
+                            detail="no kb.yaml found - not a KB folder/archive")
+    return matches[0].parent
+
+
+@app.post("/documents/import-kb", response_model=DocumentRead, status_code=202)
+def import_kb(session: SessionDep, settings: SettingsDep,
+              enqueue: EnqueueDep, enqueue_build: BuildPipelineEnqueueDep,
+              archive: UploadFile | None = File(default=None),
+              files: list[UploadFile] = File(default=[]),
+              paths: list[str] = Form(default=[]),
+              corpus: str | None = Form(default=None)):
+    """Import an llmkb knowledge base through the web: pack a whole KB into one
+    madosho document (the same kb_pack the CLI's import-kb uses) and ingest it,
+    optionally into a corpus. The KB arrives EITHER as a single `.zip` (archive)
+    OR as the folder's files (`files` + parallel `paths`, e.g. from a directory
+    picker). Packing runs here because a browser can only send files, not a path."""
+    from madosho_cli import kb_pack   # server->cli import kept lazy, like alchemy.compile
+    corpus_id = _resolve_corpus_id_or_404(session, corpus) if corpus else None
+    if archive is None and not files:
+        raise HTTPException(status_code=400,
+                            detail="provide a KB: a .zip archive or the folder's files")
+    with tempfile.TemporaryDirectory(prefix="madosho-kb-") as tmp:
+        base = Path(tmp)
+        total = 0
+        if archive is not None:
+            raw = archive.file.read()
+            total += len(raw)
+            if total > _KB_IMPORT_CAP:
+                raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+            try:
+                zf = zipfile.ZipFile(io.BytesIO(raw))
+            except zipfile.BadZipFile:
+                raise HTTPException(status_code=400, detail="archive is not a valid .zip")
+            with zf:
+                for name in zf.namelist():
+                    if name.endswith("/"):
+                        continue
+                    data = zf.read(name)
+                    total += len(data)
+                    if total > _KB_IMPORT_CAP:
+                        raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+                    _kb_write_member(base, name, data)
+        else:
+            if len(files) != len(paths):
+                raise HTTPException(status_code=400,
+                                    detail="files and paths must line up one-to-one")
+            for f, rel in zip(files, paths):
+                data = f.file.read()
+                total += len(data)
+                if total > _KB_IMPORT_CAP:
+                    raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+                _kb_write_member(base, rel, data)
+        root = _find_kb_root(base)
+        try:
+            filename, content = kb_pack.pack_kb(root)
+        except kb_pack.KbPackError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return _ingest_bytes(session, settings, enqueue, enqueue_build,
+                         content=content.encode("utf-8"), filename=filename,
+                         mimetype="text/markdown", corpus_id=corpus_id,
+                         parser=None, chunker=None, embedder=None,
+                         name=None, options=None)
 
 
 @app.get("/documents/{document_id}", response_model=DocumentDetailRead)
