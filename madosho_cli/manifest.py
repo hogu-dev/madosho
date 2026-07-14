@@ -461,6 +461,60 @@ _TOOLS: list[dict[str, Any]] = [
             "options": ["guidance", "coverage", "provider", "model", "reasoning_effort"],
         },
     },
+    {
+        "name": "list-kbs",
+        "scope": "read",
+        "description": (
+            "List the server-owned knowledge bases (id, name, corpus). A KB is a "
+            "curated wiki of pages; use get-kb-page to read one whole."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+        "invocation": {"subcommand": "list-kbs", "positional": [], "options": []},
+    },
+    {
+        "name": "get-kb-page",
+        "scope": "read",
+        "description": (
+            "Return one knowledge-base page in full (frontmatter + body) by its "
+            "slug. This is the whole-page grab - not retrieval; use list-kbs to "
+            "find a KB id and search-kb to find a page slug."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kb_id": {"type": "integer", "description": "the KB id (from list-kbs)"},
+                "slug": {"type": "string", "description": "the page slug (from search-kb)"},
+            },
+            "required": ["kb_id", "slug"],
+        },
+        "invocation": {
+            "subcommand": "get-kb-page",
+            "positional": ["kb_id", "slug"],
+            "options": [],
+        },
+    },
+    {
+        "name": "search-kb",
+        "scope": "read",
+        "description": (
+            "Full-text search over one KB's pages; returns matching page "
+            "summaries (title, slug, description). Follow with get-kb-page to "
+            "read a match in full."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kb_id": {"type": "integer", "description": "the KB id (from list-kbs)"},
+                "query": {"type": "string", "description": "search text"},
+            },
+            "required": ["kb_id", "query"],
+        },
+        "invocation": {
+            "subcommand": "search-kb",
+            "positional": ["kb_id", "query"],
+            "options": [],
+        },
+    },
 ]
 
 

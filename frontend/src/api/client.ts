@@ -1,4 +1,4 @@
-import type { AlchemyGoal, AlchemyGoalInput, AlchemyRun, AlchemyRunLaunch, AlchemyRunSummary, Artifacts, AuthMe, Comparison, Components, Corpus, CorpusMember, CreatedPipeline, Cube, DocPipeline, Document, EndpointModel, EvalLaunch, EvalRun, ExtractDiff, ExtractDivergence, Job, LibraryDocument, LlmEndpoint, LlmEndpointInput, PipelineConfig, PipelineCreate, Proposal, QueryResult, RatingsConfig, RecommendedPipeline, ResearchLaunch, ResearchRun, UserRow, VirtualModel } from "./types";
+import type { AlchemyGoal, AlchemyGoalInput, AlchemyRun, AlchemyRunLaunch, AlchemyRunSummary, Artifacts, AuthMe, Comparison, Components, Corpus, CorpusMember, CreatedPipeline, Cube, DocPipeline, Document, EndpointModel, EvalLaunch, EvalRun, ExtractDiff, ExtractDivergence, Job, Kb, KbDetail, KbPage, KbPageSummary, LibraryDocument, LlmEndpoint, LlmEndpointInput, PipelineConfig, PipelineCreate, Proposal, QueryResult, RatingsConfig, RecommendedPipeline, ResearchLaunch, ResearchRun, UserRow, VirtualModel } from "./types";
 
 export type ApiKeyRow = {
   name: string; prefix: string; scope: "read" | "write" | "admin";
@@ -199,4 +199,30 @@ export const api = {
     req<MintedKey>("/auth/keys", json({ name, scope })),
   revokeKey: (name: string) =>
     req<void>(`/auth/keys/${encodeURIComponent(name)}`, { method: "DELETE" }),
+
+  listKbs: () => req<Kb[]>("/kbs"),
+  createKb: (corpusId: number, name: string) =>
+    req<Kb>(`/corpora/${corpusId}/kbs`, json({ name })),
+  getKb: (id: number) => req<KbDetail>(`/kbs/${id}`),
+  deleteKb: (id: number) => req<void>(`/kbs/${id}`, { method: "DELETE" }),
+  getKbPage: (id: number, slug: string) => req<KbPage>(`/kbs/${id}/pages/${slug}`),
+  addKbPage: (id: number, body: {
+    type: string; title: string; description?: string;
+    tags?: string[]; sources?: string[]; body?: string;
+  }) => req<KbPage>(`/kbs/${id}/pages`, json(body)),
+  editKbPage: (id: number, slug: string, body: {
+    description?: string; tags?: string[]; sources?: string[]; body?: string;
+  }) => req<KbPage>(`/kbs/${id}/pages/${slug}`, { ...json(body), method: "PUT" }),
+  searchKb: (id: number, q: string) =>
+    req<KbPageSummary[]>(`/kbs/${id}/search?q=${encodeURIComponent(q)}`),
+  importKbWorkspace: (corpusId: number,
+    opts: { archive?: File; folder?: { file: File; path: string }[]; name?: string }) => {
+    const fd = new FormData();
+    if (opts.archive) fd.append("archive", opts.archive);
+    for (const { file, path } of opts.folder ?? []) {
+      fd.append("files", file); fd.append("paths", path);
+    }
+    if (opts.name) fd.append("name", opts.name);
+    return req<Kb>(`/corpora/${corpusId}/kbs/import`, { method: "POST", body: fd });
+  },
 };

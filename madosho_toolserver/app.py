@@ -224,6 +224,20 @@ class RunGoalBody(BaseModel):
                           "omit to use the endpoint's default")
 
 
+class ListKbsBody(BaseModel):
+    pass
+
+
+class GetKbPageBody(BaseModel):
+    kb_id: int = Field(..., description="the KB id (from list-kbs)")
+    slug: str = Field(..., description="the page slug (from search-kb)")
+
+
+class SearchKbBody(BaseModel):
+    kb_id: int = Field(..., description="the KB id (from list-kbs)")
+    query: str = Field(..., description="search text")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -342,6 +356,26 @@ def run_goal(body: RunGoalBody):
         max_llm_calls=body.max_llm_calls,
         reasoning_effort=body.reasoning_effort,
     ))
+
+
+@_tools.post("/list-kbs", operation_id="list-kbs",
+             summary="List the server-owned knowledge bases (id, name, corpus).")
+def list_kbs(body: ListKbsBody):
+    return _guard(core.list_kbs)
+
+
+@_tools.post("/get-kb-page", operation_id="get-kb-page",
+             summary="Return one knowledge-base page in full (frontmatter + body) "
+                     "by its slug.")
+def get_kb_page(body: GetKbPageBody):
+    return _guard(core.get_kb_page, body.kb_id, body.slug)
+
+
+@_tools.post("/search-kb", operation_id="search-kb",
+             summary="Full-text search over one KB's pages; returns matching page "
+                     "summaries.")
+def search_kb(body: SearchKbBody):
+    return _guard(core.search_kb, body.kb_id, body.query)
 
 
 app.include_router(_tools)

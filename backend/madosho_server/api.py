@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Callable, Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Path as PathParam, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import and_, delete, or_, select
@@ -25,7 +25,7 @@ from madosho.core.config import MadoshoConfig
 from madosho.core.errors import MadoshoError
 from madosho.core.meta import ComponentKind
 from madosho.core.registry import Registry
-from madosho_server import cube as cube_mod, db, extraction, llm_endpoints, membership, pipelines, tasks, textdiff
+from madosho_server import cube as cube_mod, db, extraction, kb_store, llm_endpoints, membership, pipelines, tasks, textdiff
 from madosho_server import auth as auth_mod
 from madosho_server.auth import make_auth_dependency
 from madosho_server.components import list_components
@@ -164,6 +164,57 @@ class CorpusRead(BaseModel):
     id: int
     name: str
     config: dict
+
+
+class KbCreate(BaseModel):
+    name: str
+
+
+class KbRead(BaseModel):
+    id: int
+    name: str
+    slug: str
+    corpus_id: int
+    corpus_name: str
+
+
+class KbPageSummary(BaseModel):
+    type: str
+    title: str
+    slug: str
+    description: str
+
+
+class KbDetailRead(KbRead):
+    index_markdown: str
+    pages: list[KbPageSummary] = []
+
+
+class KbPageWrite(BaseModel):
+    type: str
+    title: str
+    description: str = ""
+    tags: list[str] = []
+    sources: list = []
+    body: str = ""
+
+
+class KbPageEdit(BaseModel):
+    description: str | None = None
+    tags: list[str] | None = None
+    sources: list | None = None
+    body: str | None = None
+
+
+class KbPageRead(BaseModel):
+    type: str
+    title: str
+    slug: str
+    description: str
+    tags: list[str] = []
+    timestamp: str = ""
+    sources: list = []
+    body: str = ""
 
 
 class CorpusMemberPipeline(BaseModel):
@@ -1064,6 +1115,128 @@ def list_corpora(session: SessionDep):
     return session.scalars(select(db.Corpus).order_by(db.Corpus.id)).all()
 
 
+def _kb_or_404(session, kb_id: int) -> "db.Kb":
+    kb = session.get(db.Kb, kb_id)
+    if kb is None:
+        raise HTTPException(status_code=404, detail="knowledge base not found")
+    return kb
+
+
+def _kb_read(session, kb: "db.Kb") -> KbRead:
+    corpus = session.get(db.Corpus, kb.corpus_id)
+    return KbRead(id=kb.id, name=kb.name, slug=kb.slug, corpus_id=kb.corpus_id,
+                  corpus_name=corpus.name if corpus else "")
+
+
+@app.post("/corpora/{corpus_id}/kbs", response_model=KbRead, status_code=201)
+def create_kb(corpus_id: int, body: KbCreate, session: SessionDep,
+              settings: SettingsDep):
+    corpus = session.get(db.Corpus, corpus_id)
+    if corpus is None:
+        raise HTTPException(status_code=404, detail="corpus not found")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="name is required")
+    if session.scalar(select(db.Kb).where(db.Kb.corpus_id == corpus_id,
+                                          db.Kb.name == name)):
+        raise HTTPException(status_code=409,
+                            detail=f"a KB named '{name}' already exists in this corpus")
+    try:
+        slug = kb_store._slug(name)
+    except kb_store.KbStoreError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    kb = db.Kb(corpus_id=corpus_id, name=name, slug=slug)
+    session.add(kb)
+    try:
+        session.flush()      # assign kb.id without committing yet
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(status_code=409,
+                            detail=f"a KB named '{name}' already exists in this corpus")
+    try:
+        kb_store.create_kb(settings.kb_dir, kb.id, name)
+    except kb_store.KbStoreError as exc:
+        session.rollback()   # no orphan row; folder create failed so no orphan folder
+        raise HTTPException(status_code=409, detail=str(exc))
+    session.commit()
+    session.refresh(kb)
+    return _kb_read(session, kb)
+
+
+@app.get("/kbs", response_model=list[KbRead])
+def list_kbs(session: SessionDep):
+    rows = session.scalars(
+        select(db.Kb).order_by(db.Kb.corpus_id, db.Kb.id)).all()
+    return [_kb_read(session, kb) for kb in rows]
+
+
+@app.get("/kbs/{kb_id}", response_model=KbDetailRead)
+def get_kb(kb_id: int, session: SessionDep, settings: SettingsDep):
+    kb = _kb_or_404(session, kb_id)
+    root = kb_store.kb_root(settings.kb_dir, kb.id)
+    base = _kb_read(session, kb)
+    return KbDetailRead(**base.model_dump(),
+                        index_markdown=kb_store.read_index(root),
+                        pages=[KbPageSummary(**p) for p in kb_store.list_pages(root)])
+
+
+@app.delete("/kbs/{kb_id}", status_code=204)
+def delete_kb(kb_id: int, session: SessionDep, settings: SettingsDep):
+    kb = _kb_or_404(session, kb_id)
+    kb_store.delete_kb(settings.kb_dir, kb.id)
+    session.delete(kb)
+    session.commit()
+    return Response(status_code=204)
+
+
+@app.post("/kbs/{kb_id}/pages", response_model=KbPageRead, status_code=201)
+def add_kb_page(kb_id: int, body: KbPageWrite, session: SessionDep,
+                settings: SettingsDep):
+    kb = _kb_or_404(session, kb_id)
+    root = kb_store.kb_root(settings.kb_dir, kb.id)
+    try:
+        page = kb_store.add_page(root, type=body.type, title=body.title,
+                                 description=body.description, tags=body.tags,
+                                 sources=body.sources, body=body.body)
+    except kb_store.KbStoreError as exc:
+        msg = str(exc)
+        code = 409 if "already exists" in msg else 422
+        raise HTTPException(status_code=code, detail=msg)
+    return KbPageRead(**page)
+
+
+@app.get("/kbs/{kb_id}/pages/{slug}", response_model=KbPageRead)
+def get_kb_page(kb_id: int, session: SessionDep, settings: SettingsDep,
+                slug: str = PathParam(..., pattern=r"^[\w.-]+$")):
+    kb = _kb_or_404(session, kb_id)
+    page = kb_store.get_page(kb_store.kb_root(settings.kb_dir, kb.id), slug)
+    if page is None:
+        raise HTTPException(status_code=404, detail="page not found")
+    return KbPageRead(**page)
+
+
+@app.put("/kbs/{kb_id}/pages/{slug}", response_model=KbPageRead)
+def edit_kb_page(kb_id: int, body: KbPageEdit, session: SessionDep,
+                 settings: SettingsDep, slug: str = PathParam(..., pattern=r"^[\w.-]+$")):
+    kb = _kb_or_404(session, kb_id)
+    root = kb_store.kb_root(settings.kb_dir, kb.id)
+    try:
+        page = kb_store.edit_page(root, slug, description=body.description,
+                                  tags=body.tags, sources=body.sources,
+                                  body=body.body)
+    except kb_store.KbStoreError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return KbPageRead(**page)
+
+
+@app.get("/kbs/{kb_id}/search", response_model=list[KbPageSummary])
+def search_kb(kb_id: int, session: SessionDep, settings: SettingsDep,
+              q: str = Query(...)):
+    kb = _kb_or_404(session, kb_id)
+    root = kb_store.kb_root(settings.kb_dir, kb.id)
+    return [KbPageSummary(**p) for p in kb_store.search_pages(root, q)]
+
+
 @app.put("/corpora/{corpus_id}/config", response_model=CorpusRead)
 def update_config(corpus_id: int, body: ConfigUpdate, session: SessionDep):
     corpus = session.get(db.Corpus, corpus_id)
@@ -1501,6 +1674,80 @@ def import_kb(session: SessionDep, settings: SettingsDep,
                          mimetype="text/markdown", corpus_id=corpus_id,
                          parser=None, chunker=None, embedder=None,
                          name=None, options=None)
+
+
+@app.post("/corpora/{corpus_id}/kbs/import", response_model=KbRead, status_code=201)
+def import_kb_workspace(corpus_id: int, session: SessionDep, settings: SettingsDep,
+                        archive: UploadFile | None = File(default=None),
+                        files: list[UploadFile] = File(default=[]),
+                        paths: list[str] = Form(default=[]),
+                        name: str | None = Form(default=None)):
+    """Import an llmkb folder/zip as a NEW server-owned KB in this corpus
+    (browsable + editable), not a flat document. Mirrors the document import
+    unpack, then copies pages into settings.kb_dir/kb-<id>/."""
+    corpus = session.get(db.Corpus, corpus_id)
+    if corpus is None:
+        raise HTTPException(status_code=404, detail="corpus not found")
+    if archive is None and not files:
+        raise HTTPException(status_code=400,
+                            detail="provide a KB: a .zip archive or the folder's files")
+    with tempfile.TemporaryDirectory(prefix="madosho-kbimport-") as tmp:
+        base = Path(tmp)
+        total = 0
+        if archive is not None:
+            raw = archive.file.read()
+            total += len(raw)
+            if total > _KB_IMPORT_CAP:
+                raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+            try:
+                zf = zipfile.ZipFile(io.BytesIO(raw))
+            except zipfile.BadZipFile:
+                raise HTTPException(status_code=400, detail="archive is not a valid .zip")
+            with zf:
+                for entry in zf.namelist():
+                    if entry.endswith("/"):
+                        continue
+                    data = zf.read(entry)
+                    total += len(data)
+                    if total > _KB_IMPORT_CAP:
+                        raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+                    _kb_write_member(base, entry, data)
+        else:
+            if len(files) != len(paths):
+                raise HTTPException(status_code=400,
+                                    detail="files and paths must line up one-to-one")
+            for f, rel in zip(files, paths):
+                data = f.file.read()
+                total += len(data)
+                if total > _KB_IMPORT_CAP:
+                    raise HTTPException(status_code=413, detail="KB exceeds the 50 MB cap")
+                _kb_write_member(base, rel, data)
+        src_root = _find_kb_root(base)
+        kb_name = (name or src_root.name).strip() or src_root.name
+        if session.scalar(select(db.Kb).where(db.Kb.corpus_id == corpus_id,
+                                              db.Kb.name == kb_name)):
+            raise HTTPException(status_code=409,
+                                detail=f"a KB named '{kb_name}' already exists in this corpus")
+        try:
+            slug = kb_store._slug(kb_name)
+        except kb_store.KbStoreError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        kb = db.Kb(corpus_id=corpus_id, name=kb_name, slug=slug)
+        session.add(kb)
+        try:
+            session.flush()      # assign kb.id without committing yet
+        except IntegrityError:
+            session.rollback()
+            raise HTTPException(status_code=409,
+                                detail=f"a KB named '{kb_name}' already exists in this corpus")
+        try:
+            kb_store.import_from_folder(settings.kb_dir, kb.id, kb_name, src_root)
+        except kb_store.KbStoreError as exc:
+            session.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
+    session.commit()
+    session.refresh(kb)
+    return _kb_read(session, kb)
 
 
 @app.get("/documents/{document_id}", response_model=DocumentDetailRead)

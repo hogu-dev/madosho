@@ -58,6 +58,7 @@ services:
       QDRANT_URL: http://qdrant:6333
       FILESTORE_DIR: /data/filestore
       CORPORA_DIR: /data/corpora
+      KB_DIR: /data/kbs
       HF_HOME: /models
       # Index-time LLM (contextual chunker) + shared LLM creds. Seeds the
       # llm_endpoint registry on first boot; blank leaves the registry empty.
@@ -75,6 +76,7 @@ services:
     volumes:
       - filestore:/data/filestore
       - corpora:/data/corpora
+      - kbs:/data/kbs
       - hf_cache:/models
     depends_on:
       init:
@@ -220,5 +222,6 @@ volumes:
   qdrant_storage:
   filestore:
   corpora:
+  kbs:
   hf_cache:
   open_webui:

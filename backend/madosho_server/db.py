@@ -25,6 +25,22 @@ class Corpus(Base):
     ratings_config: Mapped[dict] = mapped_column(
         JSON_TYPE, default=lambda: {"trigger": "on-demand"})
 
+
+class Kb(Base):
+    """A server-owned knowledge base: a first-class, editable member of a
+    corpus. The wiki content lives on disk under settings.kb_dir/kb-<id>/
+    (llmkb v1 format); this row holds only identity + corpus membership."""
+    __tablename__ = "kb"
+    __table_args__ = (UniqueConstraint("corpus_id", "name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    corpus_id: Mapped[int] = mapped_column(ForeignKey("corpus.id"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    slug: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now())
+
 class Document(Base):
     __tablename__ = "document"
 

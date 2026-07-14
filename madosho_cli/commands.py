@@ -196,6 +196,77 @@ def cmd_upload_document(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def cmd_create_kb(args: argparse.Namespace) -> int:
+    data = core.create_kb(args.corpus, args.name)
+    if args.json:
+        _emit(data)
+    else:
+        print(f"created KB {data['name']} (id {data['id']})")
+    return 0
+
+
+def cmd_list_kbs(args: argparse.Namespace) -> int:
+    data = core.list_kbs()
+    if args.json:
+        _emit(data)
+    else:
+        if not data:
+            print("(no knowledge bases)")
+        for k in data:
+            print(f"{k['id']:>4}  {k['corpus_name']}  {k['name']}")
+    return 0
+
+
+def cmd_get_kb_page(args: argparse.Namespace) -> int:
+    data = core.get_kb_page(args.kb_id, args.slug)
+    if args.json:
+        _emit(data)
+    else:
+        print(data.get("body", ""))
+    return 0
+
+
+def cmd_add_kb_page(args: argparse.Namespace) -> int:
+    tags = args.tags.split(",") if args.tags else []
+    sources = args.source or []
+    body = sys.stdin.read() if args.body_file == "-" else (args.body or "")
+    data = core.add_kb_page(args.kb_id, type=args.type, title=args.title,
+                            description=args.description or "", tags=tags,
+                            sources=sources, body=body)
+    if args.json:
+        _emit(data)
+    else:
+        print(f"added page {data['slug']}")
+    return 0
+
+
+def cmd_edit_kb_page(args: argparse.Namespace) -> int:
+    body = None
+    if args.body_file == "-":
+        body = sys.stdin.read()
+    elif args.body is not None:
+        body = args.body
+    data = core.edit_kb_page(args.kb_id, args.slug,
+                             description=args.description, body=body)
+    if args.json:
+        _emit(data)
+    else:
+        print(f"edited page {data['slug']}")
+    return 0
+
+
+def cmd_search_kb(args: argparse.Namespace) -> int:
+    data = core.search_kb(args.kb_id, args.query)
+    if args.json:
+        _emit(data)
+    else:
+        if not data:
+            print("(no results)")
+        for h in data:
+            print(f"{h['slug']}\t{h['title']}")
+    return 0
+
+
 def cmd_import_kb(args: argparse.Namespace) -> int:
     import base64
     from . import kb_pack

@@ -137,6 +137,19 @@ def post_json(url: str, payload: dict) -> Any:
     )
 
 
+def put_json(url: str, payload: dict) -> Any:
+    headers = {"Content-Type": "application/json"}
+    headers.update(_auth_headers())
+    return _read(
+        urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers=headers,
+            method="PUT",
+        )
+    )
+
+
 def post_multipart(url, fields, file_path, *, field_name="file"):
     boundary = "----madosho" + secrets.token_hex(16)
     nl = b"\r\n"

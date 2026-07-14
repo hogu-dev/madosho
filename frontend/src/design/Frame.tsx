@@ -92,6 +92,7 @@ export function Sidebar() {
       <GroupLabel>Library</GroupLabel>
       {item("/documents", "Documents", "Source files, indexed once")}
       {item("/corpora", "Corpora", "Document collections")}
+      {item("/knowledge-bases", "Knowledge bases", "Curated wikis")}
       {item("/jobs", "Jobs", "Background builds", running > 0 ? running : undefined)}
       <GroupLabel>Measure &amp; use</GroupLabel>
       {item("/scrying", "Scrying", "Query & cited answer")}

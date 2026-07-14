@@ -288,11 +288,14 @@ def test_manifest_scopes_and_tool_set():
         "list-pipelines", "create-corpus", "upload-document", "build-pipeline",
         "add-document-to-corpus", "document-status",
         "list-goals", "goal-runs", "export-goal-run", "run-goal",
+        "list-kbs", "get-kb-page", "search-kb",
     ]
     assert tools["search"]["scope"] == "read"
     for w in ("create-corpus", "upload-document", "build-pipeline", "add-document-to-corpus"):
         assert tools[w]["scope"] == "write"
     assert tools["document-status"]["scope"] == "read"
+    for r in ("list-kbs", "get-kb-page", "search-kb"):
+        assert tools[r]["scope"] == "read"
     up = tools["upload-document"]
     assert up["parameters"]["required"] == []
     assert {"path", "content_b64"} <= set(up["parameters"]["properties"])
