@@ -1,6 +1,6 @@
 ---
 name: madosho-search
-description: Use when you need to search or read documents in a madosho RAG corpus from the command line, or to run and read madosho's autonomous alchemy goals. Drives madosho-cli (search, search-doc, get-doc, list-corpora, list-documents, list-pipelines, list-goals, goal-runs, export-goal-run, run-goal) to gather cited evidence and answer questions over indexed documents.
+description: Use when you need to search or read documents in a madosho RAG corpus from the command line, to run and read madosho's autonomous alchemy goals, or to read a server-owned knowledge base. Drives madosho-cli (search, search-doc, get-doc, list-corpora, list-documents, list-pipelines, list-goals, goal-runs, export-goal-run, run-goal, list-kbs, get-kb-page, search-kb) to gather cited evidence and answer questions over indexed documents and knowledge bases.
 ---
 
 # Drive madosho's document tools
@@ -56,6 +56,16 @@ JSON or empty, and any error prints to stderr with a non-zero exit.
   cap is required - never launch an uncapped run. Options: `--guidance <note>`,
   `--coverage search|full|exhaustive`, `--provider <p>`, `--model <m>`
   (provider/model default to the server's default LLM endpoint).
+- `madosho-cli list-kbs --json` -> the server-owned knowledge bases (id, name,
+  corpus). A KB is a corpus's own editable wiki of pages (summary / concept /
+  entity) - a different thing from a searched document. Start here if you do
+  not know a KB's id.
+- `madosho-cli search-kb <kb_id> "<query>" --json` -> full-text search over one
+  KB's pages, returning matching page summaries (title, slug, description).
+- `madosho-cli get-kb-page <kb_id> <slug> --json` -> one KB page in full
+  (frontmatter + body) by slug. This is a whole-page grab, not retrieval - the
+  KB analog of `get-doc`. Typical flow: `list-kbs` -> `search-kb` to find a
+  slug -> `get-kb-page` to read it whole.
 
 ## How to work
 
