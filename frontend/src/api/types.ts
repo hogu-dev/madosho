@@ -459,3 +459,16 @@ export interface AlchemyRunLaunch {
   concurrency?: number;   // 1-8; a parallel stage-E slice adds it server-side (default 1)
   reasoning_effort?: string;   // omitted -> the endpoint's own default
 }
+
+export type Kb = {
+  id: number; name: string; slug: string;
+  corpus_id: number; corpus_name: string;
+};
+export type KbPageSummary = {
+  type: string; title: string; slug: string; description: string;
+};
+export type KbDetail = Kb & { index_markdown: string; pages: KbPageSummary[] };
+export type KbPage = {
+  type: string; title: string; slug: string; description: string;
+  tags: string[]; timestamp: string; sources: unknown[]; body: string;
+};
