@@ -590,6 +590,20 @@ def cmd_alchemy_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_alchemy_to_kb(args: argparse.Namespace) -> int:
+    version = args.run or core.alchemy_latest_version(args.ref)
+    if version is None:
+        raise http.CliError(f"no runs for goal {args.ref}")
+    data = core.alchemy_save_to_kb(
+        args.ref, version, kb_id=args.kb_id, kb_name=args.kb_name,
+        corpus=args.corpus, title=args.title, type=args.type)
+    _emit_or_print(
+        args, data,
+        lambda d: f"saved {args.ref} v{version} -> KB {d['kb_id']} "
+                  f"page '{d['slug']}' ({d['action']})")
+    return 0
+
+
 def cmd_alchemy_list(args: argparse.Namespace) -> int:
     data = core.alchemy_list_goals()
     _emit_or_print(args, data,

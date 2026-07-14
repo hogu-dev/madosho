@@ -1,4 +1,4 @@
-import type { AlchemyGoal, AlchemyGoalInput, AlchemyRun, AlchemyRunLaunch, AlchemyRunSummary, Artifacts, AuthMe, Comparison, Components, Corpus, CorpusMember, CreatedPipeline, Cube, DocPipeline, Document, EndpointModel, EvalLaunch, EvalRun, ExtractDiff, ExtractDivergence, Job, Kb, KbDetail, KbPage, KbPageSummary, LibraryDocument, LlmEndpoint, LlmEndpointInput, PipelineConfig, PipelineCreate, Proposal, QueryResult, RatingsConfig, RecommendedPipeline, ResearchLaunch, ResearchRun, UserRow, VirtualModel } from "./types";
+import type { AlchemyGoal, AlchemyGoalInput, AlchemyRun, AlchemyRunLaunch, AlchemyRunSummary, Artifacts, AuthMe, Comparison, Components, Corpus, CorpusMember, CreatedPipeline, Cube, DocPipeline, Document, EndpointModel, EvalLaunch, EvalRun, ExtractDiff, ExtractDivergence, Job, Kb, KbDetail, KbPage, KbPageSaveResult, KbPageSummary, LibraryDocument, LlmEndpoint, LlmEndpointInput, PipelineConfig, PipelineCreate, Proposal, QueryResult, RatingsConfig, RecommendedPipeline, ResearchLaunch, ResearchRun, UserRow, VirtualModel } from "./types";
 
 export type ApiKeyRow = {
   name: string; prefix: string; scope: "read" | "write" | "admin";
@@ -215,6 +215,10 @@ export const api = {
   }) => req<KbPage>(`/kbs/${id}/pages/${slug}`, { ...json(body), method: "PUT" }),
   searchKb: (id: number, q: string) =>
     req<KbPageSummary[]>(`/kbs/${id}/search?q=${encodeURIComponent(q)}`),
+  saveKbPage: (corpusId: number, body: {
+    kb_id?: number; kb_name?: string; type?: string; title: string;
+    description?: string; body?: string; upsert?: boolean;
+  }) => req<KbPageSaveResult>(`/corpora/${corpusId}/kb-pages`, json(body)),
   importKbWorkspace: (corpusId: number,
     opts: { archive?: File; folder?: { file: File; path: string }[]; name?: string }) => {
     const fd = new FormData();

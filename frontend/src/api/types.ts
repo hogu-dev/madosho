@@ -472,3 +472,7 @@ export type KbPage = {
   type: string; title: string; slug: string; description: string;
   tags: string[]; timestamp: string; sources: unknown[]; body: string;
 };
+export type KbPageSaveResult = {
+  kb_id: number; kb_name: string; corpus_id: number;
+  slug: string; action: "created" | "updated"; created_kb: boolean;
+};

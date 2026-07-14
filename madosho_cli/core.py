@@ -56,6 +56,23 @@ def search_kb(kb_id: int, query: str) -> list[dict[str, Any]]:
     return http.get_json(f"{http.control_base()}/kbs/{kb_id}/search?q={quote(query)}")
 
 
+def save_kb_page(corpus_id: int, *, kb_id: int | None = None,
+                 kb_name: str | None = None, type: str = "concept",
+                 title: str, description: str = "", body: str = "",
+                 upsert: bool = True) -> dict[str, Any]:
+    """Save one page into a KB in `corpus_id`, creating the KB by name if it
+    does not exist. The client seam for 'output a run's report as a KB page'."""
+    payload: dict[str, Any] = {"type": type, "title": title,
+                               "description": description, "body": body,
+                               "upsert": upsert}
+    if kb_id is not None:
+        payload["kb_id"] = kb_id
+    if kb_name is not None:
+        payload["kb_name"] = kb_name
+    return http.post_json(
+        f"{http.control_base()}/corpora/{corpus_id}/kb-pages", payload)
+
+
 def upload_document(
     path: str | None = None,
     content_b64: str | None = None,
@@ -368,9 +385,31 @@ def alchemy_list_runs(ref: str) -> list[dict[str, Any]]:
     return http.get_json(f"{http.control_base()}/alchemy/goals/{ref}/runs")
 
 
+def alchemy_get_goal(ref: str) -> dict[str, Any]:
+    return http.get_json(f"{http.control_base()}/alchemy/goals/{ref}")
+
+
 def alchemy_get_run(ref: str, version: int) -> dict[str, Any]:
     return http.get_json(
         f"{http.control_base()}/alchemy/goals/{ref}/runs/{version}")
+
+
+def alchemy_save_to_kb(ref: str, version: int, *, kb_id: int | None = None,
+                       kb_name: str | None = None, corpus: str | None = None,
+                       title: str | None = None, type: str = "concept",
+                       ) -> dict[str, Any]:
+    """Save an alchemy run's draft as a single KB page. Defaults: target KB and
+    page title = the goal's name; target corpus = the goal's corpus."""
+    goal = alchemy_get_goal(ref)
+    run = alchemy_get_run(ref, version)
+    body = (run.get("draft_markdown") or "").strip()
+    if not body:
+        raise http.CliError(f"run {ref} v{version} has no draft to save")
+    corpus_id = _resolve_corpus_id(corpus) if corpus else goal["corpus_id"]
+    if kb_id is None and kb_name is None:
+        kb_name = goal["name"]
+    return save_kb_page(corpus_id, kb_id=kb_id, kb_name=kb_name, type=type,
+                        title=title or goal["name"], body=body)
 
 
 def alchemy_list_artifacts(ref: str, version: int) -> list[dict[str, Any]]:

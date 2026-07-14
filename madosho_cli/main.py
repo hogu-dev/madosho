@@ -332,6 +332,23 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(p)
     p.set_defaults(func=commands.cmd_alchemy_ingest)
 
+    p = alch_sub.add_parser(
+        "to-kb", help="save a run's draft as a KB page (create KB if needed)")
+    p.add_argument("ref")
+    p.add_argument("--run", type=int, default=None, help="version (default: latest)")
+    p.add_argument("--kb-id", dest="kb_id", type=int, default=None,
+                   help="existing KB id (default: find-or-create by name)")
+    p.add_argument("--kb-name", dest="kb_name", default=None,
+                   help="KB name to find-or-create (default: the goal name)")
+    p.add_argument("--corpus", default=None,
+                   help="target corpus (default: the goal's corpus)")
+    p.add_argument("--title", default=None,
+                   help="page title (default: the goal name)")
+    p.add_argument("--type", default="concept",
+                   choices=["summary", "concept", "entity"])
+    _add_json(p)
+    p.set_defaults(func=commands.cmd_alchemy_to_kb)
+
     p = alch_sub.add_parser("list", help="list goals")
     _add_json(p)
     p.set_defaults(func=commands.cmd_alchemy_list)

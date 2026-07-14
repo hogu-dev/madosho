@@ -7,6 +7,7 @@ import type { AlchemyGoal, AlchemyRun, AlchemyLogEntry, AlchemySection } from ".
 import { usePolling } from "../hooks/usePolling";
 import { Panel, Heading, StatusDot, Button } from "../design/primitives";
 import { BackLink } from "../design/Frame";
+import { SaveToKbModal } from "./SaveToKbModal";
 
 const mono = (size = 12, color = "var(--ink-muted)") =>
   ({ fontFamily: "var(--font-mono)" as const, fontSize: size, color });
@@ -170,6 +171,7 @@ export function AlchemyRunView() {
   const [goal, setGoal] = useState<AlchemyGoal | null>(null);
   const [run, setRun] = useState<AlchemyRun | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saveKbOpen, setSaveKbOpen] = useState(false);
 
   useEffect(() => {
     if (!goalRef) return;
@@ -309,8 +311,13 @@ export function AlchemyRunView() {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
             marginBottom: 10 }}>
             <div style={{ ...mono(10), letterSpacing: "0.12em", textTransform: "uppercase" }}>Draft</div>
-            <Button variant="ghost" onClick={() => downloadDraft(run, goal?.name ?? "")}>
-              Download .md</Button>
+            <div style={{ display: "flex", gap: 8 }}>
+              {goal && (
+                <Button variant="ghost" onClick={() => setSaveKbOpen(true)}>Save to KB</Button>
+              )}
+              <Button variant="ghost" onClick={() => downloadDraft(run, goal?.name ?? "")}>
+                Download .md</Button>
+            </div>
           </div>
           <div style={{ background: "var(--card)", border: "1px solid var(--frame-rule)",
             borderRadius: 12, padding: 22, color: "var(--ink)" }}>
@@ -344,6 +351,13 @@ export function AlchemyRunView() {
             </div>
           ))}
         </div>
+      )}
+
+      {goal && (
+        <SaveToKbModal open={saveKbOpen} onClose={() => setSaveKbOpen(false)}
+          corpusId={goal.corpus_id}
+          defaultTitle={`${goal.name} v${run.version}`}
+          body={run.draft_markdown ?? ""} />
       )}
     </Panel>
   );

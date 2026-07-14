@@ -39,3 +39,42 @@ def test_add_kb_page_posts_body(monkeypatch):
     assert captured["url"].endswith("/kbs/3/pages")
     assert captured["payload"]["title"] == "Chunking"
     assert captured["payload"]["tags"] == ["ir"]
+
+
+def test_save_kb_page_posts_to_corpus_endpoint(monkeypatch):
+    captured = {}
+
+    def fake_post(url, payload):
+        captured["url"] = url
+        captured["payload"] = payload
+        return {"kb_id": 5, "slug": "t", "action": "created"}
+
+    monkeypatch.setattr(core.http, "post_json", fake_post)
+    core.save_kb_page(7, kb_name="Notes", title="T", body="report")
+    assert captured["url"].endswith("/corpora/7/kb-pages")
+    assert captured["payload"]["kb_name"] == "Notes"
+    assert captured["payload"]["body"] == "report"
+    assert captured["payload"]["upsert"] is True
+
+
+def test_alchemy_save_to_kb_defaults_from_goal(monkeypatch):
+    captured = {}
+
+    def fake_get(url):
+        if url.endswith("/alchemy/goals/energy-brief"):
+            return {"id": 1, "name": "energy-brief", "corpus_id": 9}
+        return {"draft_markdown": "# Findings\n\ngrounded [d.md]"}
+
+    def fake_post(url, payload):
+        captured["url"] = url
+        captured["payload"] = payload
+        return {"kb_id": 2, "slug": "energy-brief", "action": "created"}
+
+    monkeypatch.setattr(core.http, "get_json", fake_get)
+    monkeypatch.setattr(core.http, "post_json", fake_post)
+    core.alchemy_save_to_kb("energy-brief", 3)
+    # corpus, kb name and title all default from the goal
+    assert captured["url"].endswith("/corpora/9/kb-pages")
+    assert captured["payload"]["kb_name"] == "energy-brief"
+    assert captured["payload"]["title"] == "energy-brief"
+    assert captured["payload"]["body"] == "# Findings\n\ngrounded [d.md]"

@@ -217,6 +217,30 @@ class KbPageRead(BaseModel):
     body: str = ""
 
 
+class KbPageSave(BaseModel):
+    """Write one page into a KB, creating the KB by name if it does not exist
+    yet. The primitive behind 'save this run's report as a KB page': the caller
+    passes the report as `body` and picks a target KB (existing `kb_id`, or a
+    `kb_name` to find-or-create in the corpus). `upsert` updates a page whose
+    title already exists instead of failing."""
+    kb_id: int | None = None
+    kb_name: str | None = None
+    type: str = "concept"
+    title: str
+    description: str = ""
+    body: str = ""
+    upsert: bool = True
+
+
+class KbPageSaveResult(BaseModel):
+    kb_id: int
+    kb_name: str
+    corpus_id: int
+    slug: str
+    action: str          # "created" | "updated"
+    created_kb: bool
+
+
 class CorpusMemberPipeline(BaseModel):
     """One of a member document's pipelines, as offered in the corpus page's
     per-document picker."""
@@ -1235,6 +1259,86 @@ def search_kb(kb_id: int, session: SessionDep, settings: SettingsDep,
     kb = _kb_or_404(session, kb_id)
     root = kb_store.kb_root(settings.kb_dir, kb.id)
     return [KbPageSummary(**p) for p in kb_store.search_pages(root, q)]
+
+
+def _find_or_create_kb(session, settings, corpus_id: int, name: str
+                       ) -> tuple["db.Kb", bool]:
+    """Return (kb, created). Find a KB by name within the corpus, else create it
+    (row + on-disk folder) reusing the same atomic guards as POST .../kbs."""
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="kb_name is required")
+    existing = session.scalar(select(db.Kb).where(db.Kb.corpus_id == corpus_id,
+                                                  db.Kb.name == name))
+    if existing is not None:
+        return existing, False
+    try:
+        slug = kb_store._slug(name)
+    except kb_store.KbStoreError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    kb = db.Kb(corpus_id=corpus_id, name=name, slug=slug)
+    session.add(kb)
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(status_code=409,
+                            detail=f"a KB named '{name}' already exists in this corpus")
+    try:
+        kb_store.create_kb(settings.kb_dir, kb.id, name)
+    except kb_store.KbStoreError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
+    return kb, True
+
+
+@app.post("/corpora/{corpus_id}/kb-pages", response_model=KbPageSaveResult,
+          status_code=201)
+def save_kb_page(corpus_id: int, body: KbPageSave, session: SessionDep,
+                 settings: SettingsDep):
+    """Save one page into a KB in this corpus, creating the KB by name if it does
+    not exist. The endpoint the UI/CLI call to turn a finished Research or
+    Alchemy report into a KB page. `upsert` (default) updates a same-titled page
+    rather than 409-ing."""
+    corpus = session.get(db.Corpus, corpus_id)
+    if corpus is None:
+        raise HTTPException(status_code=404, detail="corpus not found")
+    if not body.title.strip():
+        raise HTTPException(status_code=422, detail="title is required")
+
+    if body.kb_id is not None:
+        kb = _kb_or_404(session, body.kb_id)
+        if kb.corpus_id != corpus_id:
+            raise HTTPException(status_code=404,
+                                detail="knowledge base is not in this corpus")
+        created_kb = False
+    elif body.kb_name:
+        kb, created_kb = _find_or_create_kb(session, settings, corpus_id,
+                                            body.kb_name)
+    else:
+        raise HTTPException(status_code=422,
+                            detail="kb_id or kb_name is required")
+
+    root = kb_store.kb_root(settings.kb_dir, kb.id)
+    try:
+        page = kb_store.add_page(root, type=body.type, title=body.title,
+                                 description=body.description, body=body.body)
+        action = "created"
+    except kb_store.KbStoreError as exc:
+        msg = str(exc)
+        if "already exists" not in msg:
+            session.rollback()
+            raise HTTPException(status_code=422, detail=msg)
+        if not body.upsert:
+            session.rollback()
+            raise HTTPException(status_code=409, detail=msg)
+        # upsert: rewrite the existing same-titled page in place
+        page = kb_store.edit_page(root, kb_store._slug(body.title),
+                                  description=body.description, body=body.body)
+        action = "updated"
+    session.commit()
+    return KbPageSaveResult(kb_id=kb.id, kb_name=kb.name, corpus_id=corpus_id,
+                            slug=page["slug"], action=action, created_kb=created_kb)
 
 
 @app.put("/corpora/{corpus_id}/config", response_model=CorpusRead)

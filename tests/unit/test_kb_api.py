@@ -148,3 +148,81 @@ def test_import_kb_creates_server_owned_kb(client):
     pages = client.get(f"/kbs/{kid}").json()["pages"]
     assert [p["slug"] for p in pages] == ["chunking"]
     assert client.get(f"/kbs/{kid}/pages/chunking").json()["body"] == "split text"
+
+
+# -- save-a-report-as-a-page (the "output a run to a KB" primitive) -----------
+
+def test_save_page_creates_new_kb_and_page(client):
+    cid = _corpus(client)
+    r = client.post(f"/corpora/{cid}/kb-pages", json={
+        "kb_name": "Run Notes", "type": "concept",
+        "title": "Photosynthesis", "description": "how energy is stored",
+        "body": "# Report\n\nGrounded findings [doc.md]."})
+    assert r.status_code == 201, r.text
+    out = r.json()
+    assert out["created_kb"] is True
+    assert out["action"] == "created"
+    assert out["slug"] == "photosynthesis"
+    # the KB is real, attached to the corpus, and holds the page verbatim
+    kid = out["kb_id"]
+    assert client.get(f"/kbs/{kid}").json()["corpus_id"] == cid
+    page = client.get(f"/kbs/{kid}/pages/photosynthesis").json()
+    assert page["body"] == "# Report\n\nGrounded findings [doc.md]."
+
+
+def test_save_page_reuses_existing_kb_by_id(client):
+    cid = _corpus(client)
+    kid = _kb(client, cid, "Existing")
+    r = client.post(f"/corpora/{cid}/kb-pages", json={
+        "kb_id": kid, "type": "concept", "title": "Reranking", "body": "x"})
+    assert r.status_code == 201
+    out = r.json()
+    assert out["kb_id"] == kid and out["created_kb"] is False
+    assert out["action"] == "created"
+
+
+def test_save_page_by_name_reuses_kb_and_upserts_title(client):
+    cid = _corpus(client)
+    # first save creates the KB + page
+    client.post(f"/corpora/{cid}/kb-pages", json={
+        "kb_name": "Notes", "type": "concept", "title": "T", "body": "v1"})
+    # second save with the SAME name + title reuses the KB and updates the page
+    r = client.post(f"/corpora/{cid}/kb-pages", json={
+        "kb_name": "Notes", "type": "concept", "title": "T", "body": "v2"})
+    assert r.status_code == 201
+    out = r.json()
+    assert out["created_kb"] is False and out["action"] == "updated"
+    kid = out["kb_id"]
+    assert client.get(f"/kbs/{kid}/pages/t").json()["body"] == "v2"
+
+
+def test_save_page_upsert_false_conflicts_409(client):
+    cid = _corpus(client)
+    kid = _kb(client, cid, "K")
+    body = {"kb_id": kid, "type": "concept", "title": "Dup", "body": "a"}
+    assert client.post(f"/corpora/{cid}/kb-pages", json=body).status_code == 201
+    r = client.post(f"/corpora/{cid}/kb-pages",
+                    json={**body, "body": "b", "upsert": False})
+    assert r.status_code == 409
+
+
+def test_save_page_missing_corpus_404(client):
+    r = client.post("/corpora/999/kb-pages",
+                    json={"kb_name": "N", "type": "concept", "title": "T"})
+    assert r.status_code == 404
+
+
+def test_save_page_kb_not_in_corpus_404(client):
+    c1 = _corpus(client, "c1")
+    c2 = _corpus(client, "c2")
+    kid = _kb(client, c2, "elsewhere")
+    r = client.post(f"/corpora/{c1}/kb-pages",
+                    json={"kb_id": kid, "type": "concept", "title": "T"})
+    assert r.status_code == 404
+
+
+def test_save_page_requires_kb_id_or_name_422(client):
+    cid = _corpus(client)
+    r = client.post(f"/corpora/{cid}/kb-pages",
+                    json={"type": "concept", "title": "T"})
+    assert r.status_code == 422

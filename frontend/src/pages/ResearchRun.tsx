@@ -6,6 +6,7 @@ import { api } from "../api/client";
 import type { ResearchRun as Run } from "../api/types";
 import { usePolling } from "../hooks/usePolling";
 import { Panel, Heading, StatusDot, Button } from "../design/primitives";
+import { SaveToKbModal } from "./SaveToKbModal";
 
 const mono = (size = 12, color = "var(--ink-muted)") =>
   ({ fontFamily: "var(--font-mono)" as const, fontSize: size, color });
@@ -56,6 +57,7 @@ export function ResearchRun() {
 
   const [run, setRun] = useState<Run | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saveKbOpen, setSaveKbOpen] = useState(false);
 
   const load = () => {
     if (corpusId == null || !Number.isFinite(id)) return;
@@ -106,7 +108,10 @@ export function ResearchRun() {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
             <div style={{ ...mono(10, "var(--ink-muted)"), letterSpacing: "0.12em", textTransform: "uppercase" }}>
               Report</div>
-            <Button variant="ghost" onClick={() => downloadReport(run)}>Download .md</Button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button variant="ghost" onClick={() => setSaveKbOpen(true)}>Save to KB</Button>
+              <Button variant="ghost" onClick={() => downloadReport(run)}>Download .md</Button>
+            </div>
           </div>
           <div style={{ background: "var(--card)", border: "1px solid var(--frame-rule)", borderRadius: 12,
             padding: 22, color: "var(--ink)" }}>
@@ -138,6 +143,11 @@ export function ResearchRun() {
           ))}
         </div>
       )}
+
+      <SaveToKbModal open={saveKbOpen} onClose={() => setSaveKbOpen(false)}
+        corpusId={run.corpus_id}
+        defaultTitle={(run.prompt ?? "").trim().slice(0, 80) || `research ${run.id}`}
+        body={run.report_markdown ?? ""} />
     </Panel>
   );
 }
