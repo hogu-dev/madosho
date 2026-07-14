@@ -100,3 +100,28 @@ def test_delete_kb_removes_folder(tmp_path):
     kb_store.create_kb(str(tmp_path), 1, "KB")
     kb_store.delete_kb(str(tmp_path), 1)
     assert not (Path(tmp_path) / "kb-1").exists()
+
+
+def test_kb_model_and_unique_constraint():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from sqlalchemy.exc import IntegrityError
+    from madosho_server import db
+
+    eng = create_engine("sqlite://")
+    db.Base.metadata.create_all(eng)
+    with Session(eng) as s:
+        s.add(db.Corpus(name="c1", config={}))
+        s.commit()
+        s.add(db.Kb(corpus_id=1, name="Notes", slug="notes"))
+        s.commit()
+        s.add(db.Kb(corpus_id=1, name="Notes", slug="notes"))
+        import pytest
+        with pytest.raises(IntegrityError):
+            s.commit()
+
+
+def test_settings_reads_kb_dir(monkeypatch):
+    from madosho_server.settings import Settings
+    monkeypatch.setenv("KB_DIR", "/tmp/kbs-test")
+    assert Settings.from_env().kb_dir == "/tmp/kbs-test"

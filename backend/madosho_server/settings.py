@@ -10,6 +10,7 @@ class Settings:
     qdrant_url: str
     filestore_dir: str
     corpora_dir: str        # kernel per-corpus state (manifest etc.)
+    kb_dir: str             # server-owned KB folders (llmkb v1), one per kb-<id>
     llm_api_key: str | None = None
     llm_api_base: str | None = None
     # Index-time LLM (e.g. the contextual chunker situating chunks at build time).
@@ -36,6 +37,7 @@ class Settings:
             qdrant_url=os.environ.get("QDRANT_URL", "http://localhost:6333"),
             filestore_dir=os.environ.get("FILESTORE_DIR", "/data/filestore"),
             corpora_dir=os.environ.get("CORPORA_DIR", "/data/corpora"),
+            kb_dir=os.environ.get("KB_DIR", "/data/kbs"),
             llm_api_key=os.environ.get("MADOSHO_LLM_API_KEY") or None,
             llm_api_base=os.environ.get("MADOSHO_LLM_API_BASE") or None,
             index_llm_provider=os.environ.get("MADOSHO_INDEX_LLM_PROVIDER") or None,
@@ -55,7 +57,7 @@ class Settings:
 
 
     _ENV_ALLOWLIST = (
-        "DATABASE_URL", "QDRANT_URL", "FILESTORE_DIR", "CORPORA_DIR", "HF_HOME",
+        "DATABASE_URL", "QDRANT_URL", "FILESTORE_DIR", "CORPORA_DIR", "KB_DIR", "HF_HOME",
         "MADOSHO_LLM_API_KEY", "MADOSHO_LLM_API_BASE",
         "MADOSHO_INDEX_LLM_PROVIDER", "MADOSHO_INDEX_LLM_MODEL",
         "MADOSHO_AUTH_ENABLED", "MADOSHO_SESSION_SECRET",
