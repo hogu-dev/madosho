@@ -9,6 +9,7 @@ jobs:
     environment: pypi
     permissions:
       id-token: write          # OIDC for Trusted Publishing
+      contents: read           # checkout (a permissions: block zeroes unlisted scopes)
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -22,6 +23,7 @@ jobs:
     environment: pypi
     permissions:
       id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -35,6 +37,7 @@ jobs:
     environment: pypi
     permissions:
       id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
