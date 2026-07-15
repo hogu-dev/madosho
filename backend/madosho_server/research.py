@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict
 
-from madosho_server import db
+from madosho_server import db, llm_endpoints
 from madosho_server.tasks import _finish, _is_research_cancelled
 
 logger = logging.getLogger(__name__)
@@ -106,7 +106,10 @@ def execute_research(session, research_run_id: int, settings, *, run_agent=None)
         prompt = compose_research_prompt(
             run.prompt, corpus.name, cfg.get("source", "rag"),
             cfg.get("document_ids") or [], cfg.get("budget_chars", 100_000))
-        report = runner(prompt, settings, provider, model,
+        # Bind to the SELECTED endpoint's api_base+key so the run hits the
+        # server its (provider, model) resolves to, not the global default lane.
+        run_settings = llm_endpoints.endpoint_creds_for(session, settings, provider, model)
+        report = runner(prompt, run_settings, provider, model,
                         budget_chars=cfg.get("budget_chars", 100_000),
                         max_rounds=cfg.get("max_rounds", 8),
                         research_run_id=research_run_id,

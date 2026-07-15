@@ -12,7 +12,7 @@ import threading
 from dataclasses import asdict, is_dataclass
 
 from madosho_server import db
-from madosho_server.llm_endpoints import endpoint_budget
+from madosho_server.llm_endpoints import endpoint_budget, endpoint_creds_for
 from madosho_server.tasks import _finish, _is_alchemy_cancelled
 
 logger = logging.getLogger(__name__)
@@ -223,6 +223,9 @@ def execute_alchemy_run(session, alchemy_run_id: int, settings,
     # server adapter; the alchemy package stays DB-free.
     reg_source_budget, _ctx_tokens = endpoint_budget(session, provider, model)
     budget_chars = reg_source_budget or cfg.get("budget_chars", 100_000)
+    # Bind to the SELECTED endpoint's api_base+key so the run hits the server its
+    # (provider, model) resolves to, not the global default lane.
+    settings = endpoint_creds_for(session, settings, provider, model)
     runner = run_goal_fn or (lambda goal_type, spec, **kw: _default_run_goal(
         goal_type, spec, settings=settings, provider=provider, model=model,
         budget_chars=budget_chars,

@@ -82,6 +82,23 @@ def endpoint_creds(settings, row):
     return dataclasses.replace(settings, llm_api_base=row.api_base, llm_api_key=key)
 
 
+def endpoint_creds_for(session, settings, provider: str, model: str):
+    """Return a Settings COPY bound to the api_base + key of the registry row
+    matching (provider, model), or the given settings unchanged when no row
+    matches. Same row selection as endpoint_budget/endpoint_reasoning_effort
+    (default row wins, then lowest id), so an agentic run (research/alchemy)
+    hits the SERVER of the endpoint its (provider, model) resolves to, not the
+    global default lane. A run whose model is absent from the registry keeps
+    the global default settings."""
+    row = session.scalars(
+        select(db.LlmEndpoint)
+        .where(db.LlmEndpoint.provider == provider,
+               db.LlmEndpoint.model == model)
+        .order_by(db.LlmEndpoint.is_default.desc(), db.LlmEndpoint.id)
+    ).first()
+    return endpoint_creds(settings, row) if row is not None else settings
+
+
 def resolve_llm(session, settings, endpoint: "db.LlmEndpoint | None" = None):
     """Return (callable, row). `callable(prompt) -> str` is bound to the
     endpoint's OWN api_base/key (a replace() copy of the frozen Settings), so

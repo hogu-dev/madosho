@@ -484,6 +484,46 @@ def test_exec_uses_registry_source_budget(tmp_path, monkeypatch):
     assert got["budget_chars"] == 16000
 
 
+def test_exec_binds_selected_endpoint_api_base(tmp_path, monkeypatch):
+    # A registry row for this run's (provider, model) points at its own server:
+    # the run must execute against THAT api_base, not the global default lane.
+    rid = _seed(tmp_path)
+    with db.SessionLocal() as s:
+        s.add(db.LlmEndpoint(name="p-m", provider="p", model="m",
+                             api_base="http://picked-endpoint/v1"))
+        s.commit()
+    got = {}
+
+    def capture_settings(goal_type, spec, *, settings, **kw):
+        got["api_base"] = settings.llm_api_base
+        return FakeResult()
+
+    monkeypatch.setattr(alchemy_exec, "_default_run_goal", capture_settings)
+    base = Settings.from_env()
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, base)
+        assert s.get(db.AlchemyRun, rid).status == "done"
+    assert got["api_base"] == "http://picked-endpoint/v1"
+    assert base.llm_api_base != "http://picked-endpoint/v1"   # global settings untouched
+
+
+def test_exec_keeps_global_api_base_when_no_endpoint_row(tmp_path, monkeypatch):
+    # No matching row -> the run keeps the global default lane's api_base.
+    rid = _seed(tmp_path)
+    got = {}
+
+    def capture_settings(goal_type, spec, *, settings, **kw):
+        got["api_base"] = settings.llm_api_base
+        return FakeResult()
+
+    monkeypatch.setattr(alchemy_exec, "_default_run_goal", capture_settings)
+    base = Settings.from_env()
+    with db.SessionLocal() as s:
+        alchemy_exec.execute_alchemy_run(s, rid, base)
+        assert s.get(db.AlchemyRun, rid).status == "done"
+    assert got["api_base"] == base.llm_api_base
+
+
 def test_exec_falls_back_to_config_budget_when_no_registry_metadata(tmp_path, monkeypatch):
     # No matching row (or a row without a budget) -> endpoint_budget returns
     # (None, None) and the run config's budget_chars (5000) is used.

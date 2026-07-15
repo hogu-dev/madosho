@@ -107,6 +107,43 @@ def test_execute_research_writes_report_and_marks_done(tmp_path, monkeypatch):
     assert captured["provider"] == "openai" and captured["model"] == "m"
 
 
+def test_execute_research_binds_selected_endpoint_api_base(tmp_path):
+    # A registry row for this run's (provider, model) points at its own server:
+    # the runner must receive settings bound to THAT api_base, not the global one.
+    SessionLocal = _fresh_db(tmp_path)
+    cid = _corpus(SessionLocal)
+    rid = _make_run(SessionLocal, cid)   # llm = openai/m
+    with SessionLocal() as s:
+        s.add(db.LlmEndpoint(name="picked", provider="openai", model="m",
+                             api_base="http://picked-endpoint/v1"))
+        s.commit()
+    captured = {}
+
+    def fake_run_agent(prompt, settings, provider, model, **k):
+        captured["api_base"] = settings.llm_api_base
+        return _fake_report()
+
+    with SessionLocal() as s:
+        execute_research(s, rid, _settings(tmp_path), run_agent=fake_run_agent)
+    assert captured["api_base"] == "http://picked-endpoint/v1"
+
+
+def test_execute_research_keeps_global_api_base_when_no_endpoint_row(tmp_path):
+    # No registry row matches (provider, model) -> the global default lane stays.
+    SessionLocal = _fresh_db(tmp_path)
+    cid = _corpus(SessionLocal)
+    rid = _make_run(SessionLocal, cid)
+    captured = {}
+
+    def fake_run_agent(prompt, settings, provider, model, **k):
+        captured["api_base"] = settings.llm_api_base
+        return _fake_report()
+
+    with SessionLocal() as s:
+        execute_research(s, rid, _settings(tmp_path), run_agent=fake_run_agent)
+    assert captured["api_base"] == "http://llm"   # _settings() global default
+
+
 def test_execute_research_marks_failed_on_exception(tmp_path):
     SessionLocal = _fresh_db(tmp_path)
     cid = _corpus(SessionLocal)
