@@ -9,6 +9,8 @@ import mimetypes
 import os
 import tempfile
 import zipfile
+
+import httpx
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
@@ -151,6 +153,31 @@ def get_enqueue_delete() -> Callable[[Session, list, str], None]:
 
 DeleteEnqueueDep = Annotated[
     Callable[[Session, list, str], None], Depends(get_enqueue_delete)]
+
+
+class KbIndexer:
+    """Fire-and-forget enqueue seam for KB semantic-index jobs. KB mutations
+    write to disk (not a DB row), so these defer plainly on the app's connector
+    after the on-disk write has succeeded, rather than binding to a request
+    transaction. Overridable in tests via get_kb_indexer."""
+    def index(self, kb_id: int, slug: str) -> None:
+        tasks.index_kb_page.defer(kb_id=kb_id, slug=slug)
+
+    def remove(self, kb_id: int, slug: str) -> None:
+        tasks.remove_kb_page.defer(kb_id=kb_id, slug=slug)
+
+    def reindex(self, kb_id: int) -> None:
+        tasks.reindex_kb.defer(kb_id=kb_id)
+
+    def drop(self, kb_id: int) -> None:
+        tasks.drop_kb_index.defer(kb_id=kb_id)
+
+
+def get_kb_indexer() -> KbIndexer:
+    return KbIndexer()
+
+
+KbIndexerDep = Annotated[KbIndexer, Depends(get_kb_indexer)]
 
 
 # ---- schemas -------------------------------------------------------------
@@ -1213,17 +1240,19 @@ def get_kb(kb_id: int, session: SessionDep, settings: SettingsDep):
 
 
 @app.delete("/kbs/{kb_id}", status_code=204)
-def delete_kb(kb_id: int, session: SessionDep, settings: SettingsDep):
+def delete_kb(kb_id: int, session: SessionDep, settings: SettingsDep,
+              indexer: KbIndexerDep):
     kb = _kb_or_404(session, kb_id)
     kb_store.delete_kb(settings.kb_dir, kb.id)
     session.delete(kb)
     session.commit()
+    indexer.drop(kb_id)
     return Response(status_code=204)
 
 
 @app.post("/kbs/{kb_id}/pages", response_model=KbPageRead, status_code=201)
 def add_kb_page(kb_id: int, body: KbPageWrite, session: SessionDep,
-                settings: SettingsDep):
+                settings: SettingsDep, indexer: KbIndexerDep):
     kb = _kb_or_404(session, kb_id)
     root = kb_store.kb_root(settings.kb_dir, kb.id)
     try:
@@ -1234,6 +1263,7 @@ def add_kb_page(kb_id: int, body: KbPageWrite, session: SessionDep,
         msg = str(exc)
         code = 409 if "already exists" in msg else 422
         raise HTTPException(status_code=code, detail=msg)
+    indexer.index(kb.id, page["slug"])
     return KbPageRead(**page)
 
 
@@ -1249,7 +1279,8 @@ def get_kb_page(kb_id: int, session: SessionDep, settings: SettingsDep,
 
 @app.put("/kbs/{kb_id}/pages/{slug}", response_model=KbPageRead)
 def edit_kb_page(kb_id: int, body: KbPageEdit, session: SessionDep,
-                 settings: SettingsDep, slug: str = PathParam(..., pattern=r"^[\w.-]+$")):
+                 settings: SettingsDep, indexer: KbIndexerDep,
+                 slug: str = PathParam(..., pattern=r"^[\w.-]+$")):
     kb = _kb_or_404(session, kb_id)
     root = kb_store.kb_root(settings.kb_dir, kb.id)
     try:
@@ -1258,12 +1289,14 @@ def edit_kb_page(kb_id: int, body: KbPageEdit, session: SessionDep,
                                   body=body.body)
     except kb_store.KbStoreError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    indexer.index(kb.id, page["slug"])
     return KbPageRead(**page)
 
 
 @app.post("/kbs/{kb_id}/pages/{slug}/move", response_model=KbPageRead)
 def move_kb_page(kb_id: int, body: KbPageMove, session: SessionDep,
-                 settings: SettingsDep, slug: str = PathParam(..., pattern=r"^[\w.-]+$")):
+                 settings: SettingsDep, indexer: KbIndexerDep,
+                 slug: str = PathParam(..., pattern=r"^[\w.-]+$")):
     kb = _kb_or_404(session, kb_id)
     dest = _kb_or_404(session, body.dest_kb_id)
     src_root = kb_store.kb_root(settings.kb_dir, kb.id)
@@ -1275,13 +1308,34 @@ def move_kb_page(kb_id: int, body: KbPageMove, session: SessionDep,
         msg = str(exc)
         code = 409 if "already exists" in msg else 404 if "no page" in msg else 422
         raise HTTPException(status_code=code, detail=msg)
+    # Re-embed at the destination; drop the old vector when the page left this KB.
+    if dest.id != kb.id:
+        indexer.remove(kb.id, slug)
+    indexer.index(dest.id, page["slug"])
     return KbPageRead(**page)
 
 
 @app.get("/kbs/{kb_id}/search", response_model=list[KbPageSummary])
 def search_kb(kb_id: int, session: SessionDep, settings: SettingsDep,
-              q: str = Query(...)):
+              request: Request, q: str = Query(...)):
+    """Fused lexical+semantic KB search. The query plane owns the embedder, so
+    this control-plane route forwards there (carrying the caller's auth, which
+    the query plane validates the same way). Falls back to a local lexical scan
+    when no query plane is configured or it is unreachable."""
     kb = _kb_or_404(session, kb_id)
+    if settings.query_url:
+        try:
+            headers = {h: request.headers[h] for h in ("authorization", "cookie")
+                       if h in request.headers}
+            resp = httpx.get(f"{settings.query_url.rstrip('/')}/kbs/{kb.id}/search",
+                             params={"q": q}, headers=headers, timeout=30.0)
+            if resp.status_code == 200:
+                return [KbPageSummary(**p) for p in resp.json()]
+            logger.warning("kb search proxy: query plane returned %s; using lexical",
+                           resp.status_code)
+        except httpx.HTTPError:
+            logger.warning("kb search proxy to query plane failed; using lexical",
+                           exc_info=True)
     root = kb_store.kb_root(settings.kb_dir, kb.id)
     return [KbPageSummary(**p) for p in kb_store.search_pages(root, q)]
 
@@ -1320,7 +1374,7 @@ def _find_or_create_kb(session, settings, corpus_id: int, name: str
 @app.post("/corpora/{corpus_id}/kb-pages", response_model=KbPageSaveResult,
           status_code=201)
 def save_kb_page(corpus_id: int, body: KbPageSave, session: SessionDep,
-                 settings: SettingsDep):
+                 settings: SettingsDep, indexer: KbIndexerDep):
     """Save one page into a KB in this corpus, creating the KB by name if it does
     not exist. The endpoint the UI/CLI call to turn a finished Research or
     Alchemy report into a KB page. `upsert` (default) updates a same-titled page
@@ -1362,6 +1416,7 @@ def save_kb_page(corpus_id: int, body: KbPageSave, session: SessionDep,
                                   description=body.description, body=body.body)
         action = "updated"
     session.commit()
+    indexer.index(kb.id, page["slug"])
     return KbPageSaveResult(kb_id=kb.id, kb_name=kb.name, corpus_id=corpus_id,
                             slug=page["slug"], action=action, created_kb=created_kb)
 
@@ -1807,6 +1862,7 @@ def import_kb(session: SessionDep, settings: SettingsDep,
 
 @app.post("/corpora/{corpus_id}/kbs/import", response_model=KbRead, status_code=201)
 def import_kb_workspace(corpus_id: int, session: SessionDep, settings: SettingsDep,
+                        indexer: KbIndexerDep,
                         archive: UploadFile | None = File(default=None),
                         files: list[UploadFile] = File(default=[]),
                         paths: list[str] = Form(default=[]),
@@ -1876,7 +1932,17 @@ def import_kb_workspace(corpus_id: int, session: SessionDep, settings: SettingsD
             raise HTTPException(status_code=400, detail=str(exc))
     session.commit()
     session.refresh(kb)
+    indexer.reindex(kb.id)   # embed all imported pages in one batch job
     return _kb_read(session, kb)
+
+
+@app.post("/kbs/{kb_id}/reindex", status_code=202)
+def reindex_kb_endpoint(kb_id: int, session: SessionDep, indexer: KbIndexerDep):
+    """Backfill/rebuild a KB's semantic index (all pages), for KBs created
+    before indexing existed or to recover from drift."""
+    kb = _kb_or_404(session, kb_id)
+    indexer.reindex(kb.id)
+    return {"kb_id": kb.id, "status": "reindex enqueued"}
 
 
 @app.get("/documents/{document_id}", response_model=DocumentDetailRead)

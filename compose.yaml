@@ -73,6 +73,8 @@ services:
       MADOSHO_AUTH_ENABLED: ${MADOSHO_AUTH_ENABLED:-}
       MADOSHO_SESSION_SECRET: ${MADOSHO_SESSION_SECRET:-}
       MADOSHO_COOKIE_INSECURE: ${MADOSHO_COOKIE_INSECURE:-}
+      # Control plane forwards KB semantic search here (query plane owns the embedder).
+      MADOSHO_QUERY_URL: http://query:8001
     volumes:
       - filestore:/data/filestore
       - corpora:/data/corpora
@@ -116,6 +118,7 @@ services:
       MADOSHO_COOKIE_INSECURE: ${MADOSHO_COOKIE_INSECURE:-}
     volumes:
       - corpora:/data/corpora
+      - kbs:/data/kbs                   # KB pages: query plane reads them for KB semantic search
       - hf_cache:/models
     depends_on:
       init:
@@ -173,6 +176,7 @@ services:
     volumes:
       - filestore:/data/filestore       # SAME volume as app: worker reads uploaded files
       - corpora:/data/corpora
+      - kbs:/data/kbs                   # KB pages: worker embeds them for semantic search
       - hf_cache:/models
     depends_on:
       init:

@@ -27,6 +27,7 @@ class Settings:
     job_image: str = "madosho:local"
     docker_host: str | None = None
     job_network: str | None = None
+    query_url: str | None = None   # control plane -> query plane, for KB semantic search proxy
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -53,6 +54,7 @@ class Settings:
             job_image=os.environ.get("MADOSHO_JOB_IMAGE") or "madosho:local",
             docker_host=os.environ.get("MADOSHO_DOCKER_HOST") or None,
             job_network=os.environ.get("MADOSHO_JOB_NETWORK") or None,
+            query_url=os.environ.get("MADOSHO_QUERY_URL") or None,
         )
 
 

@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from madosho.core.errors import MadoshoError
-from madosho_server import db, llm, membership, pipeline_cache, pipelines as pipelines_mod, query_core, retrieval
+from madosho_server import db, kb_index, kb_store, llm, membership, pipeline_cache, pipelines as pipelines_mod, query_core, retrieval
 from madosho_server.auth import make_auth_dependency
 from madosho_server.llm_endpoints import endpoint_creds, endpoint_reasoning_effort
 from madosho_server.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 def get_settings() -> Settings:
@@ -156,6 +159,37 @@ class OpenAIErrorResponse(BaseModel):
 @app.get("/health", response_model=HealthResponse)
 def health():
     return {"status": "ok"}
+
+
+class KbPageSummary(BaseModel):
+    slug: str
+    type: str
+    title: str
+    description: str
+
+
+@app.get("/kbs/{kb_id}/search", response_model=list[KbPageSummary],
+         responses={404: {"model": ErrorResponse}})
+def kb_search(kb_id: int, session: SessionDep, settings: SettingsDep,
+              q: str = Query(..., min_length=1)):
+    """Fused KB retrieval: RRF-merge the lexical page scan with page-level
+    semantic search over the KB's vector collection. Runs on the query plane
+    because it owns the embedder. Degrades to lexical-only when the KB has no
+    vector collection yet (never indexed) or the vector lane is unavailable."""
+    kb = session.get(db.Kb, kb_id)
+    if kb is None:
+        raise HTTPException(status_code=404, detail="knowledge base not found")
+    root = kb_store.kb_root(settings.kb_dir, kb.id)
+    lexical = kb_store.search_pages(root, q)
+    semantic: list = []
+    try:
+        store = kb_index.open_store(settings.qdrant_url, kb.id)
+        if store.native.collection_exists(kb_index.kb_collection(kb.id)):
+            semantic = kb_index.search(store, kb_index.get_embedder(), q)
+    except Exception:
+        logger.warning("kb_search: semantic lane unavailable for kb %s; "
+                       "returning lexical only", kb.id, exc_info=True)
+    return kb_index.fuse(lexical, semantic)
 
 
 @app.post("/query", response_model=QueryAnswerResponse | QueryHitsResponse,

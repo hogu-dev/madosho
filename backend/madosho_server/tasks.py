@@ -643,6 +643,86 @@ def build_pipeline(pipeline_id: int) -> None:
     _dispatch("ingest", "build_pipeline", {"pipeline_id": pipeline_id})
 
 
+# -- KB semantic index -------------------------------------------------------
+# Page-level embeddings for KB pages, kept in per-KB qdrant collections. Runs
+# on the worker (the app process loads no local model); jobs ride the "ingest"
+# queue, which the worker already drains inproc with the embedder warm. The
+# embedder cache + store factory are shared with the query plane in kb_index.
+def _kb_embedder():
+    from madosho_server import kb_index
+    return kb_index.get_embedder()
+
+
+def _kb_store(settings, kb_id: int):
+    from madosho_server import kb_index
+    return kb_index.open_store(settings.qdrant_url, kb_id)
+
+
+def _kb_pages(settings, kb_id: int) -> list[dict]:
+    from madosho_server import kb_store
+    root = kb_store.kb_root(settings.kb_dir, kb_id)
+    pages: list[dict] = []
+    for summ in kb_store.list_pages(root):
+        page = kb_store.get_page(root, summ["slug"])
+        if page is not None:
+            pages.append(page)
+    return pages
+
+
+def _index_kb_page_impl(kb_id: int, slug: str) -> None:
+    from madosho_server import kb_index, kb_store
+    settings = Settings.from_env()
+    page = kb_store.get_page(kb_store.kb_root(settings.kb_dir, kb_id), slug)
+    if page is None:
+        logger.warning("index_kb_page: no page %s in kb %s", slug, kb_id)
+        return
+    kb_index.index_page(_kb_store(settings, kb_id), _kb_embedder(), kb_id, page)
+
+
+def _remove_kb_page_impl(kb_id: int, slug: str) -> None:
+    from madosho_server import kb_index
+    kb_index.remove_page(_kb_store(Settings.from_env(), kb_id), slug)
+
+
+def _reindex_kb_impl(kb_id: int) -> None:
+    from madosho_server import kb_index
+    settings = Settings.from_env()
+    n = kb_index.reindex(_kb_store(settings, kb_id), _kb_embedder(),
+                         kb_id, _kb_pages(settings, kb_id))
+    logger.info("reindex_kb: embedded %s page(s) for kb %s", n, kb_id)
+
+
+def _drop_kb_index_impl(kb_id: int) -> None:
+    from madosho_server import kb_index
+    store = _kb_store(Settings.from_env(), kb_id)
+    coll = kb_index.kb_collection(kb_id)
+    try:
+        if store.native.collection_exists(coll):
+            store.native.delete_collection(coll)
+    except Exception:
+        logger.exception("drop_kb_index: failed to drop %s", coll)
+
+
+@app.task(queue="ingest", name="index_kb_page")
+def index_kb_page(kb_id: int, slug: str) -> None:
+    _dispatch("ingest", "index_kb_page", {"kb_id": kb_id, "slug": slug})
+
+
+@app.task(queue="ingest", name="remove_kb_page")
+def remove_kb_page(kb_id: int, slug: str) -> None:
+    _dispatch("ingest", "remove_kb_page", {"kb_id": kb_id, "slug": slug})
+
+
+@app.task(queue="ingest", name="reindex_kb")
+def reindex_kb(kb_id: int) -> None:
+    _dispatch("ingest", "reindex_kb", {"kb_id": kb_id})
+
+
+@app.task(queue="ingest", name="drop_kb_index")
+def drop_kb_index(kb_id: int) -> None:
+    _dispatch("ingest", "drop_kb_index", {"kb_id": kb_id})
+
+
 _IMPLS = {
     "ingest_document": _ingest_document_impl,
     "delete_document_artifacts": _delete_document_artifacts_impl,
@@ -651,6 +731,10 @@ _IMPLS = {
     "run_research": _run_research_impl,
     "run_alchemy": _run_alchemy_impl,
     "build_pipeline": _build_pipeline_impl,
+    "index_kb_page": _index_kb_page_impl,
+    "remove_kb_page": _remove_kb_page_impl,
+    "reindex_kb": _reindex_kb_impl,
+    "drop_kb_index": _drop_kb_index_impl,
 }
 
 

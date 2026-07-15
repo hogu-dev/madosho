@@ -5,6 +5,25 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+class RecordingIndexer:
+    """Stand-in for KbIndexer: records enqueue calls instead of deferring real
+    jobs, so KB API tests never touch procrastinate/qdrant."""
+    def __init__(self):
+        self.calls = []
+
+    def index(self, kb_id, slug):
+        self.calls.append(("index", kb_id, slug))
+
+    def remove(self, kb_id, slug):
+        self.calls.append(("remove", kb_id, slug))
+
+    def reindex(self, kb_id):
+        self.calls.append(("reindex", kb_id))
+
+    def drop(self, kb_id):
+        self.calls.append(("drop", kb_id))
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     # A bare in-memory "sqlite://" URL hands each connection its own private
@@ -16,10 +35,15 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("KB_DIR", str(tmp_path / "kbs"))
     monkeypatch.setenv("MADOSHO_AUTH_ENABLED", "0")
     from madosho_server import db
-    from madosho_server.api import app
+    from madosho_server.api import app, get_kb_indexer
     db.configure_engine(db_url)
     db.create_all()
-    return TestClient(app)
+    recorder = RecordingIndexer()
+    app.dependency_overrides[get_kb_indexer] = lambda: recorder
+    c = TestClient(app)
+    c.kb_indexer = recorder   # tests read c.kb_indexer.calls
+    yield c
+    app.dependency_overrides.pop(get_kb_indexer, None)
 
 
 def _corpus(client, name="c1"):
@@ -259,3 +283,66 @@ def test_save_page_requires_kb_id_or_name_422(client):
     r = client.post(f"/corpora/{cid}/kb-pages",
                     json={"type": "concept", "title": "T"})
     assert r.status_code == 422
+
+
+# -- semantic-index enqueue wiring -----------------------------------------
+
+def _kb(client, cid, name="Notes"):
+    return client.post(f"/corpora/{cid}/kbs", json={"name": name}).json()["id"]
+
+
+def test_add_page_enqueues_index(client):
+    cid = _corpus(client)
+    kb = _kb(client, cid)
+    r = client.post(f"/kbs/{kb}/pages", json={"type": "concept", "title": "Flight Control", "body": "x"})
+    assert r.status_code == 201
+    slug = r.json()["slug"]
+    assert ("index", kb, slug) in client.kb_indexer.calls
+
+
+def test_edit_page_enqueues_index(client):
+    cid = _corpus(client)
+    kb = _kb(client, cid)
+    slug = client.post(f"/kbs/{kb}/pages", json={"type": "concept", "title": "T", "body": "a"}).json()["slug"]
+    client.kb_indexer.calls.clear()
+    r = client.put(f"/kbs/{kb}/pages/{slug}", json={"body": "b"})
+    assert r.status_code == 200
+    assert ("index", kb, slug) in client.kb_indexer.calls
+
+
+def test_delete_kb_enqueues_drop(client):
+    cid = _corpus(client)
+    kb = _kb(client, cid)
+    client.kb_indexer.calls.clear()
+    assert client.delete(f"/kbs/{kb}").status_code == 204
+    assert ("drop", kb) in client.kb_indexer.calls
+
+
+def test_move_page_cross_kb_removes_source_and_indexes_dest(client):
+    cid = _corpus(client)
+    a = _kb(client, cid, "A")
+    b = _kb(client, cid, "B")
+    slug = client.post(f"/kbs/{a}/pages", json={"type": "concept", "title": "P", "body": "x"}).json()["slug"]
+    client.kb_indexer.calls.clear()
+    r = client.post(f"/kbs/{a}/pages/{slug}/move", json={"dest_kb_id": b, "type": "concept"})
+    assert r.status_code == 200
+    assert ("remove", a, slug) in client.kb_indexer.calls
+    assert ("index", b, r.json()["slug"]) in client.kb_indexer.calls
+
+
+def test_save_kb_page_enqueues_index(client):
+    cid = _corpus(client)
+    r = client.post(f"/corpora/{cid}/kb-pages",
+                    json={"kb_name": "Findings", "type": "concept", "title": "R", "body": "report"})
+    assert r.status_code == 201
+    kb_id = r.json()["kb_id"]
+    assert ("index", kb_id, r.json()["slug"]) in client.kb_indexer.calls
+
+
+def test_reindex_endpoint_enqueues_reindex(client):
+    cid = _corpus(client)
+    kb = _kb(client, cid)
+    client.kb_indexer.calls.clear()
+    r = client.post(f"/kbs/{kb}/reindex")
+    assert r.status_code == 202
+    assert ("reindex", kb) in client.kb_indexer.calls

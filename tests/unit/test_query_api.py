@@ -279,3 +279,82 @@ def test_query_source_document_hits_unlabeled(env, monkeypatch):
         hit = r.json()["hits"][0]
         assert hit["origin"] == "source"
         assert "[generated" not in hit["citation"]
+
+
+# -- KB fused semantic search (query plane) ---------------------------------
+
+def _seed_kb(base_dir):
+    """A corpus + KB row + two pages on disk; returns kb_id."""
+    from madosho_server import kb_store
+    with db.SessionLocal() as s:
+        c = db.Corpus(name="demo", config={"corpus": "demo", "query": []})
+        s.add(c); s.commit(); s.refresh(c)
+        kb = db.Kb(corpus_id=c.id, name="Notes", slug="notes")
+        s.add(kb); s.commit(); s.refresh(kb)
+        kb_id = kb.id
+    root = kb_store.create_kb(base_dir, kb_id, "Notes")
+    kb_store.add_page(root, type="concept", title="AFTI", description="flight",
+                      body="digital flight control")
+    kb_store.add_page(root, type="concept", title="Saturn V", description="rocket",
+                      body="rocket engine")
+    return kb_id
+
+
+def _stub_semantic(monkeypatch, hits):
+    """Stub the query plane's semantic lane so no qdrant/model is needed."""
+    from madosho_server import kb_index
+
+    class _FakeStore:
+        class native:
+            @staticmethod
+            def collection_exists(name):
+                return True
+
+    monkeypatch.setattr(kb_index, "open_store", lambda url, kid: _FakeStore())
+    monkeypatch.setattr(kb_index, "get_embedder", lambda: object())
+    monkeypatch.setattr(kb_index, "search", lambda store, emb, q, k=20: hits)
+
+
+def test_kb_search_fuses_lexical_and_semantic(env, monkeypatch, tmp_path):
+    monkeypatch.setenv("KB_DIR", str(tmp_path / "kbs"))
+    with TestClient(query_api.app) as client:
+        kb_id = _seed_kb(str(tmp_path / "kbs"))
+        # semantic surfaces 'saturn-v', which the lexical scan for "flight" misses
+        sem = [_hit_kb("saturn-v", "Saturn V", "rocket")]
+        _stub_semantic(monkeypatch, sem)
+        r = client.get(f"/kbs/{kb_id}/search", params={"q": "flight"})
+        assert r.status_code == 200
+        slugs = {p["slug"] for p in r.json()}
+        assert "afti" in slugs          # lexical match on "flight"
+        assert "saturn-v" in slugs      # semantic-only match, unioned in
+
+
+def test_kb_search_falls_back_to_lexical_when_unindexed(env, monkeypatch, tmp_path):
+    from madosho_server import kb_index
+    monkeypatch.setenv("KB_DIR", str(tmp_path / "kbs"))
+    with TestClient(query_api.app) as client:
+        kb_id = _seed_kb(str(tmp_path / "kbs"))
+
+        class _NoColl:
+            class native:
+                @staticmethod
+                def collection_exists(name):
+                    return False
+        monkeypatch.setattr(kb_index, "open_store", lambda url, kid: _NoColl())
+        r = client.get(f"/kbs/{kb_id}/search", params={"q": "flight"})
+        assert r.status_code == 200
+        assert [p["slug"] for p in r.json()] == ["afti"]   # lexical only
+
+
+def test_kb_search_unknown_kb_404(env, tmp_path, monkeypatch):
+    monkeypatch.setenv("KB_DIR", str(tmp_path / "kbs"))
+    with TestClient(query_api.app) as client:
+        assert client.get("/kbs/999/search", params={"q": "x"}).status_code == 404
+
+
+def _hit_kb(slug, title, description):
+    from madosho.core.types import Chunk, Hit
+    ch = Chunk(id=slug, doc_id=slug, text="",
+               metadata={"slug": slug, "type": "concept", "title": title,
+                         "description": description})
+    return Hit(chunk_id=slug, score=0.9, source_index="dense", chunk=ch)
