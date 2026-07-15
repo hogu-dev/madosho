@@ -213,6 +213,8 @@ export const api = {
   editKbPage: (id: number, slug: string, body: {
     description?: string; tags?: string[]; sources?: string[]; body?: string;
   }) => req<KbPage>(`/kbs/${id}/pages/${slug}`, { ...json(body), method: "PUT" }),
+  moveKbPage: (id: number, slug: string, body: { dest_kb_id: number; type: string }) =>
+    req<KbPage>(`/kbs/${id}/pages/${slug}/move`, json(body)),
   searchKb: (id: number, q: string) =>
     req<KbPageSummary[]>(`/kbs/${id}/search?q=${encodeURIComponent(q)}`),
   saveKbPage: (corpusId: number, body: {

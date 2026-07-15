@@ -4,7 +4,8 @@ import { KbDetail } from "../KbDetail";
 import { api } from "../../api/client";
 
 vi.mock("../../api/client", () => ({
-  api: { getKb: vi.fn(), getKbPage: vi.fn(), addKbPage: vi.fn(), editKbPage: vi.fn() },
+  api: { getKb: vi.fn(), getKbPage: vi.fn(), addKbPage: vi.fn(), editKbPage: vi.fn(),
+    listKbs: vi.fn(), moveKbPage: vi.fn() },
 }));
 vi.mock("../../auth/AuthContext", () => ({ useAuth: () => ({ canWrite: true }) }));
 
@@ -17,6 +18,10 @@ const KB = {
 beforeEach(() => {
   vi.restoreAllMocks();
   (api.getKb as any).mockResolvedValue(KB);
+  (api.listKbs as any).mockResolvedValue([
+    { id: 3, name: "Notes", slug: "notes", corpus_id: 1, corpus_name: "c1" },
+    { id: 9, name: "Archive", slug: "archive", corpus_id: 1, corpus_name: "c1" },
+  ]);
 });
 
 function renderAt(id = "3") {
@@ -83,5 +88,49 @@ describe("KbDetail", () => {
     fireEvent.click(screen.getByRole("button", { name: /Save page/i }));
     await waitFor(() => expect(add).toHaveBeenCalledWith(3,
       expect.objectContaining({ title: "New idea" })));
+  });
+
+  it("shows tags/sources and edits them into a tag list", async () => {
+    (api.getKbPage as any).mockResolvedValue({
+      type: "concept", title: "Reranking", slug: "reranking", description: "reorder",
+      tags: ["ir", "ranking"], timestamp: "t", sources: ["doc:3"], body: "the body",
+    });
+    const edit = (api.editKbPage as any).mockResolvedValue({
+      type: "concept", title: "Reranking", slug: "reranking", description: "reorder",
+      tags: ["ir", "ranking", "nlp"], timestamp: "t", sources: ["doc:3"], body: "the body",
+    });
+    renderAt();
+    await screen.findByText("Reranking");
+    fireEvent.click(screen.getByText("Reranking"));
+    // read-mode surfaces the existing tags + sources
+    expect(await screen.findByText("ir")).toBeInTheDocument();
+    expect(screen.getByText("doc:3")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Edit$/i }));
+    const tagsBox = screen.getByDisplayValue("ir, ranking");
+    fireEvent.change(tagsBox, { target: { value: "ir, ranking, nlp" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    await waitFor(() => expect(edit).toHaveBeenCalledWith(3, "reranking",
+      expect.objectContaining({ tags: ["ir", "ranking", "nlp"] })));
+  });
+
+  it("moving a page calls moveKbPage with the chosen KB and type", async () => {
+    (api.getKbPage as any).mockResolvedValue({
+      type: "concept", title: "Reranking", slug: "reranking", description: "reorder",
+      tags: [], timestamp: "t", sources: [], body: "the body",
+    });
+    const move = (api.moveKbPage as any).mockResolvedValue({
+      type: "summary", title: "Reranking", slug: "reranking", description: "reorder",
+      tags: [], timestamp: "t", sources: [], body: "the body",
+    });
+    renderAt();
+    await screen.findByText("Reranking");
+    fireEvent.click(screen.getByText("Reranking"));
+    await screen.findByText("the body");
+    fireEvent.click(screen.getByRole("button", { name: /^Move$/i }));
+    fireEvent.change(await screen.findByLabelText("Target knowledge base"), { target: { value: "9" } });
+    fireEvent.change(screen.getByLabelText("Target type"), { target: { value: "summary" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Move$/i }));
+    await waitFor(() => expect(move).toHaveBeenCalledWith(3, "reranking",
+      { dest_kb_id: 9, type: "summary" }));
   });
 });

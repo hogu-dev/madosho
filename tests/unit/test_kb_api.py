@@ -116,6 +116,39 @@ def test_add_duplicate_page_409(client):
     assert client.post(f"/kbs/{kid}/pages", json=body).status_code == 409
 
 
+def test_move_page_between_kbs_and_retype(client):
+    cid = _corpus(client)
+    src, dest = _kb(client, cid, "Src"), _kb(client, cid, "Dest")
+    client.post(f"/kbs/{src}/pages", json={
+        "type": "concept", "title": "Reranking", "description": "d",
+        "tags": ["ir"], "sources": ["doc:3"], "body": "cross encoder"})
+    r = client.post(f"/kbs/{src}/pages/reranking/move",
+                    json={"dest_kb_id": dest, "type": "summary"})
+    assert r.status_code == 200
+    moved = r.json()
+    assert moved["type"] == "summary" and moved["tags"] == ["ir"]
+    assert moved["sources"] == ["doc:3"] and moved["body"] == "cross encoder"
+    # gone from source, present in destination
+    assert client.get(f"/kbs/{src}/pages/reranking").status_code == 404
+    assert client.get(f"/kbs/{dest}/pages/reranking").json()["type"] == "summary"
+
+
+def test_move_page_collision_409_missing_404(client):
+    cid = _corpus(client)
+    src, dest = _kb(client, cid, "Src"), _kb(client, cid, "Dest")
+    for kid in (src, dest):
+        client.post(f"/kbs/{kid}/pages", json={
+            "type": "concept", "title": "Reranking", "description": "d"})
+    clash = client.post(f"/kbs/{src}/pages/reranking/move",
+                        json={"dest_kb_id": dest, "type": "concept"})
+    assert clash.status_code == 409
+    # source page still there after the rejected move
+    assert client.get(f"/kbs/{src}/pages/reranking").status_code == 200
+    gone = client.post(f"/kbs/{src}/pages/ghost/move",
+                       json={"dest_kb_id": dest, "type": "concept"})
+    assert gone.status_code == 404
+
+
 def test_search_pages(client):
     cid = _corpus(client)
     kid = _kb(client, cid)

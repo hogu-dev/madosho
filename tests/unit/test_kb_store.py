@@ -118,6 +118,55 @@ def test_import_from_folder_copies_pages(tmp_path):
     assert "[[Chunking]]" in (dest / "wiki" / "index.md").read_text()
 
 
+def test_move_page_retype_within_kb_relocates_and_preserves_fields(tmp_path):
+    root = kb_store.create_kb(str(tmp_path), 1, "KB")
+    kb_store.add_page(root, type="concept", title="Reranking", description="reorder",
+                      tags=["ir"], sources=["doc:3"], body="Body.")
+    moved = kb_store.move_page(root, "reranking", dest_root=root, new_type="summary")
+    assert moved["type"] == "summary" and moved["slug"] == "reranking"
+    # fields other than type survive
+    assert moved["description"] == "reorder" and moved["tags"] == ["ir"]
+    assert moved["sources"] == ["doc:3"] and moved["body"] == "Body."
+    # file physically relocated between subdirs
+    assert not (root / "wiki" / "concepts" / "reranking.md").exists()
+    assert (root / "wiki" / "summaries" / "reranking.md").exists()
+    # index reflects the new home
+    assert "[[Reranking]]" in kb_store.read_index(root)
+
+
+def test_move_page_between_kbs(tmp_path):
+    src = kb_store.create_kb(str(tmp_path), 1, "Src")
+    dest = kb_store.create_kb(str(tmp_path), 2, "Dest")
+    kb_store.add_page(src, type="concept", title="Reranking", description="d",
+                      tags=["ir"], sources=[], body="Body.")
+    moved = kb_store.move_page(src, "reranking", dest_root=dest, new_type="concept")
+    assert moved["title"] == "Reranking" and moved["type"] == "concept"
+    assert kb_store.get_page(src, "reranking") is None
+    assert kb_store.get_page(dest, "reranking") is not None
+    assert "[[Reranking]]" not in kb_store.read_index(src)
+    assert "[[Reranking]]" in kb_store.read_index(dest)
+
+
+def test_move_page_rejects_destination_collision(tmp_path):
+    src = kb_store.create_kb(str(tmp_path), 1, "Src")
+    dest = kb_store.create_kb(str(tmp_path), 2, "Dest")
+    kb_store.add_page(src, type="concept", title="Reranking", description="d")
+    kb_store.add_page(dest, type="concept", title="Reranking", description="other")
+    with pytest.raises(kb_store.KbStoreError, match="already exists"):
+        kb_store.move_page(src, "reranking", dest_root=dest, new_type="concept")
+    # source page untouched after the failed move
+    assert kb_store.get_page(src, "reranking") is not None
+
+
+def test_move_page_rejects_missing_slug_and_noop(tmp_path):
+    root = kb_store.create_kb(str(tmp_path), 1, "KB")
+    kb_store.add_page(root, type="concept", title="Reranking", description="d")
+    with pytest.raises(kb_store.KbStoreError, match="no page"):
+        kb_store.move_page(root, "ghost", dest_root=root, new_type="summary")
+    with pytest.raises(kb_store.KbStoreError, match="already"):
+        kb_store.move_page(root, "reranking", dest_root=root, new_type="concept")
+
+
 def test_delete_kb_removes_folder(tmp_path):
     kb_store.create_kb(str(tmp_path), 1, "KB")
     kb_store.delete_kb(str(tmp_path), 1)

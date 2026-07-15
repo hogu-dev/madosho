@@ -185,6 +185,32 @@ def edit_page(root: Path, slug: str, *, description: str | None = None,
     return _page_dict(path)
 
 
+def move_page(src_root: Path, slug: str, *, dest_root: Path, new_type: str) -> dict:
+    """Relocate a page to another KB (`dest_root`) and/or a different `new_type`.
+    Every field but `type` is carried over unchanged; the file moves between the
+    type subdirs (and KB folders). Errors on a missing source, a no-op move, or a
+    title collision at the destination. Both KBs are reindexed and logged."""
+    src_path = _find_by_slug(src_root, slug)
+    if src_path is None:
+        raise KbStoreError(f"no page with slug {slug!r}")
+    cur = _page_dict(src_path)
+    dest_path = _page_path(dest_root, new_type, cur["title"])
+    if dest_path.resolve() == src_path.resolve():
+        raise KbStoreError("page is already in that knowledge base and type")
+    if dest_path.exists():
+        raise KbStoreError(f"a page titled {cur['title']!r} already exists")
+    meta = {"type": new_type, "title": cur["title"],
+            "description": cur["description"], "tags": list(cur["tags"]),
+            "timestamp": cur["timestamp"], "sources": list(cur["sources"])}
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(_serialize(meta, cur["body"]), encoding="utf-8")
+    src_path.unlink()
+    for root in {src_root.resolve(): src_root, dest_root.resolve(): dest_root}.values():
+        _append_log(root, "move-page", cur["title"])
+        reindex(root)
+    return _page_dict(dest_path)
+
+
 def get_page(root: Path, slug: str) -> dict | None:
     path = _find_by_slug(root, slug)
     return _page_dict(path) if path is not None else None

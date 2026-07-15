@@ -206,6 +206,14 @@ class KbPageEdit(BaseModel):
     body: str | None = None
 
 
+class KbPageMove(BaseModel):
+    """Relocate a page to `dest_kb_id` (may be the same KB) under `type`. The
+    move preserves every other field; it fails on a title collision at the
+    destination."""
+    dest_kb_id: int
+    type: str
+
+
 class KbPageRead(BaseModel):
     type: str
     title: str
@@ -1250,6 +1258,23 @@ def edit_kb_page(kb_id: int, body: KbPageEdit, session: SessionDep,
                                   body=body.body)
     except kb_store.KbStoreError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    return KbPageRead(**page)
+
+
+@app.post("/kbs/{kb_id}/pages/{slug}/move", response_model=KbPageRead)
+def move_kb_page(kb_id: int, body: KbPageMove, session: SessionDep,
+                 settings: SettingsDep, slug: str = PathParam(..., pattern=r"^[\w.-]+$")):
+    kb = _kb_or_404(session, kb_id)
+    dest = _kb_or_404(session, body.dest_kb_id)
+    src_root = kb_store.kb_root(settings.kb_dir, kb.id)
+    dest_root = kb_store.kb_root(settings.kb_dir, dest.id)
+    try:
+        page = kb_store.move_page(src_root, slug, dest_root=dest_root,
+                                  new_type=body.type)
+    except kb_store.KbStoreError as exc:
+        msg = str(exc)
+        code = 409 if "already exists" in msg else 404 if "no page" in msg else 422
+        raise HTTPException(status_code=code, detail=msg)
     return KbPageRead(**page)
 
 
