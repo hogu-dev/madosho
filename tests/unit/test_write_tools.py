@@ -288,10 +288,11 @@ def test_manifest_scopes_and_tool_set():
         "list-pipelines", "create-corpus", "upload-document", "build-pipeline",
         "add-document-to-corpus", "document-status",
         "list-goals", "goal-runs", "export-goal-run", "run-goal",
-        "list-kbs", "get-kb-page", "search-kb",
+        "list-kbs", "get-kb-page", "search-kb", "add-kb-page", "edit-kb-page",
     ]
     assert tools["search"]["scope"] == "read"
-    for w in ("create-corpus", "upload-document", "build-pipeline", "add-document-to-corpus"):
+    for w in ("create-corpus", "upload-document", "build-pipeline",
+              "add-document-to-corpus", "add-kb-page", "edit-kb-page"):
         assert tools[w]["scope"] == "write"
     assert tools["document-status"]["scope"] == "read"
     for r in ("list-kbs", "get-kb-page", "search-kb"):
@@ -299,6 +300,30 @@ def test_manifest_scopes_and_tool_set():
     up = tools["upload-document"]
     assert up["parameters"]["required"] == []
     assert {"path", "content_b64"} <= set(up["parameters"]["properties"])
+
+
+def test_csv_to_list_accepts_string_and_list():
+    assert core.csv_to_list("") == []
+    assert core.csv_to_list(None) == []
+    assert core.csv_to_list("a, b ,c") == ["a", "b", "c"]      # trims blanks
+    assert core.csv_to_list("a,,b") == ["a", "b"]              # drops empties
+    assert core.csv_to_list(["x", " y "]) == ["x", "y"]        # list passes through
+
+
+def test_cmd_add_kb_page_merges_source_flags_and_splits_tags(monkeypatch):
+    import argparse
+    from madosho_cli import commands
+    seen = {}
+    monkeypatch.setattr(commands.core, "add_kb_page",
+                        lambda kb_id, **kw: seen.update(kb_id=kb_id, **kw) or {"slug": "s"})
+    args = argparse.Namespace(kb_id=5, type="concept", title="T", description="d",
+                              tags="a, b", source=["doc-1"], sources="doc-2, doc-3",
+                              body="hi", body_file=None, json=True)
+    assert commands.cmd_add_kb_page(args) == 0
+    assert seen["tags"] == ["a", "b"]
+    # repeated --source and comma --sources are merged
+    assert seen["sources"] == ["doc-1", "doc-2", "doc-3"]
+    assert seen["kb_id"] == 5 and seen["body"] == "hi"
 
 
 # ---------------------------------------------------------------------------

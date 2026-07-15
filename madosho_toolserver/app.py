@@ -238,6 +238,23 @@ class SearchKbBody(BaseModel):
     query: str = Field(..., description="search text")
 
 
+class AddKbPageBody(BaseModel):
+    kb_id: int = Field(..., description="the KB id (from list-kbs)")
+    type: str = Field(..., description="the page type")
+    title: str = Field(..., description="the page title (unique within the KB)")
+    description: str = Field("", description="one-line summary of the page")
+    tags: str = Field("", description="comma-separated tags")
+    sources: str = Field("", description="comma-separated source ids/urls the finding came from")
+    body: str = Field("", description="the page body (markdown)")
+
+
+class EditKbPageBody(BaseModel):
+    kb_id: int = Field(..., description="the KB id (from list-kbs)")
+    slug: str = Field(..., description="the page slug (from search-kb)")
+    description: str | None = Field(None, description="replacement one-line summary")
+    body: str | None = Field(None, description="replacement page body (markdown)")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -376,6 +393,22 @@ def get_kb_page(body: GetKbPageBody):
                      "summaries.")
 def search_kb(body: SearchKbBody):
     return _guard(core.search_kb, body.kb_id, body.query)
+
+
+@_tools.post("/add-kb-page", operation_id="add-kb-page",
+             summary="Write a new page into a knowledge base to record a finding.")
+def add_kb_page(body: AddKbPageBody):
+    return _guard(lambda: core.add_kb_page(
+        body.kb_id, type=body.type, title=body.title, description=body.description,
+        tags=core.csv_to_list(body.tags), sources=core.csv_to_list(body.sources),
+        body=body.body))
+
+
+@_tools.post("/edit-kb-page", operation_id="edit-kb-page",
+             summary="Update an existing KB page's description and/or body by slug.")
+def edit_kb_page(body: EditKbPageBody):
+    return _guard(lambda: core.edit_kb_page(
+        body.kb_id, body.slug, description=body.description, body=body.body))
 
 
 app.include_router(_tools)

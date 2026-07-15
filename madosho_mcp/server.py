@@ -126,6 +126,17 @@ def dispatch(name: str, arguments: dict) -> dict:
         # (the SDK would try to validate a bare list as content blocks), so
         # wrap it -- on this transport only; CLI/toolserver return the raw list.
         return {"results": core.search_kb(arguments["kb_id"], arguments["query"])}
+    if name == "add-kb-page":
+        return core.add_kb_page(
+            arguments["kb_id"], type=arguments["type"], title=arguments["title"],
+            description=arguments.get("description", ""),
+            tags=core.csv_to_list(arguments.get("tags")),
+            sources=core.csv_to_list(arguments.get("sources")),
+            body=arguments.get("body", ""))
+    if name == "edit-kb-page":
+        return core.edit_kb_page(
+            arguments["kb_id"], arguments["slug"],
+            description=arguments.get("description"), body=arguments.get("body"))
     raise ValueError(f"unknown tool: {name!r}")
 
 

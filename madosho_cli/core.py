@@ -19,6 +19,17 @@ from urllib.parse import quote
 from . import http
 
 
+def csv_to_list(value: Any) -> list[str]:
+    """Normalise a tags/sources argument to a clean list. Accepts a real list
+    (MCP/toolserver clients may send an array) or a comma-separated string (the
+    form that round-trips through the generic CliToolProvider, which stringifies
+    every option value). Empty/blank entries are dropped."""
+    if not value:
+        return []
+    parts = value if isinstance(value, list) else str(value).split(",")
+    return [s.strip() for s in (str(p) for p in parts) if s.strip()]
+
+
 def create_corpus(name: str) -> dict[str, Any]:
     return http.post_json(f"{http.control_base()}/corpora", {"name": name})
 

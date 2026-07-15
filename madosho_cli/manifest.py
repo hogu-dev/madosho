@@ -515,6 +515,62 @@ _TOOLS: list[dict[str, Any]] = [
             "options": [],
         },
     },
+    {
+        "name": "add-kb-page",
+        "scope": "write",
+        "description": (
+            "Write a new page into a knowledge base to record a durable finding. "
+            "type is summary (one page per source), concept (synthesis across "
+            "sources), or entity (a person, org, system, or product). Set sources "
+            "to the documents the finding came from. Search the KB (search-kb) or "
+            "read a page (get-kb-page) first to avoid a duplicate title; use "
+            "edit-kb-page to update an existing page instead of adding a second."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kb_id": {"type": "integer", "description": "the KB id (from list-kbs)"},
+                "type": {"type": "string", "enum": ["summary", "concept", "entity"],
+                         "description": "the page type"},
+                "title": {"type": "string", "description": "the page title (unique within the KB)"},
+                "description": {"type": "string", "description": "one-line summary of the page"},
+                "tags": {"type": "string", "description": "comma-separated tags"},
+                "sources": {"type": "string",
+                            "description": "comma-separated source ids/urls the finding came from"},
+                "body": {"type": "string", "description": "the page body (markdown)"},
+            },
+            "required": ["kb_id", "type", "title"],
+        },
+        "invocation": {
+            "subcommand": "add-kb-page",
+            "positional": ["kb_id", "type", "title"],
+            "options": ["description", "tags", "sources", "body"],
+        },
+    },
+    {
+        "name": "edit-kb-page",
+        "scope": "write",
+        "description": (
+            "Update an existing knowledge-base page's description and/or body, "
+            "identified by its slug (from search-kb or get-kb-page). Use this "
+            "instead of add-kb-page when a page on the topic already exists."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kb_id": {"type": "integer", "description": "the KB id (from list-kbs)"},
+                "slug": {"type": "string", "description": "the page slug (from search-kb)"},
+                "description": {"type": "string", "description": "replacement one-line summary"},
+                "body": {"type": "string", "description": "replacement page body (markdown)"},
+            },
+            "required": ["kb_id", "slug"],
+        },
+        "invocation": {
+            "subcommand": "edit-kb-page",
+            "positional": ["kb_id", "slug"],
+            "options": ["description", "body"],
+        },
+    },
 ]
 
 

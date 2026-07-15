@@ -134,3 +134,38 @@ def test_dispatch_run_goal_routes_to_core(monkeypatch):
     # provider/model omitted -> None passes through (server-side fallback)
     assert seen == {"ref": "find_vuln", "provider": None, "model": None,
                     "coverage": "full", "guidance": "dig", "max_llm_calls": 6}
+
+
+def test_dispatch_add_kb_page_routes_to_core(monkeypatch):
+    seen = {}
+
+    def fake_add(kb_id, *, type, title, description="", tags=None, sources=None, body=""):
+        seen.update(kb_id=kb_id, type=type, title=title, description=description,
+                    tags=tags, sources=sources, body=body)
+        return {"slug": "sensor-fusion", "title": title}
+
+    monkeypatch.setattr(server.core, "add_kb_page", fake_add)
+    out = server.dispatch("add-kb-page", {
+        "kb_id": 5, "type": "concept", "title": "Sensor fusion",
+        "description": "how it degrades", "tags": "avionics, f16",
+        "sources": "doc-1, doc-2", "body": "# body"})
+    assert out == {"slug": "sensor-fusion", "title": "Sensor fusion"}
+    # comma-separated tags/sources are split to lists at the seam
+    assert seen == {"kb_id": 5, "type": "concept", "title": "Sensor fusion",
+                    "description": "how it degrades", "tags": ["avionics", "f16"],
+                    "sources": ["doc-1", "doc-2"], "body": "# body"}
+
+
+def test_dispatch_edit_kb_page_routes_to_core(monkeypatch):
+    seen = {}
+
+    def fake_edit(kb_id, slug, *, description=None, body=None):
+        seen.update(kb_id=kb_id, slug=slug, description=description, body=body)
+        return {"slug": slug}
+
+    monkeypatch.setattr(server.core, "edit_kb_page", fake_edit)
+    out = server.dispatch("edit-kb-page", {"kb_id": 5, "slug": "sensor-fusion",
+                                           "body": "# revised"})
+    assert out == {"slug": "sensor-fusion"}
+    assert seen == {"kb_id": 5, "slug": "sensor-fusion",
+                    "description": None, "body": "# revised"}

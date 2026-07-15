@@ -315,7 +315,7 @@ def test_manifest_shape_and_invariants():
         "create-corpus", "upload-document", "build-pipeline",
         "add-document-to-corpus", "document-status",
         "list-goals", "goal-runs", "export-goal-run", "run-goal",
-        "list-kbs", "get-kb-page", "search-kb",
+        "list-kbs", "get-kb-page", "search-kb", "add-kb-page", "edit-kb-page",
     ]
     for t in m["tools"]:
         assert set(t) >= {"name", "description", "parameters", "invocation"}
@@ -424,7 +424,7 @@ def test_agent_tools_cli_json(capsys):
     rc = cli_main.main(["agent-tools", "--json"])
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
-    assert "tools" in out and len(out["tools"]) == 18
+    assert "tools" in out and len(out["tools"]) == 20
 
 
 def test_agent_tools_cli_human(capsys):

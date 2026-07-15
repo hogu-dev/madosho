@@ -135,11 +135,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("add-kb-page", help="write a new KB page")
     p.add_argument("kb_id", type=int)
-    p.add_argument("--type", required=True, choices=["summary", "concept", "entity"])
-    p.add_argument("--title", required=True)
+    p.add_argument("type", choices=["summary", "concept", "entity"])
+    p.add_argument("title")
     p.add_argument("--description", default="")
     p.add_argument("--tags", default="")
-    p.add_argument("--source", action="append")
+    p.add_argument("--source", action="append",
+                   help="a source id/url; repeatable")
+    p.add_argument("--sources", default="",
+                   help="comma-separated sources (alternative to repeated --source)")
     p.add_argument("--body", default=None)
     p.add_argument("--body-file", default=None, dest="body_file")
     _add_json(p)

@@ -227,8 +227,8 @@ def cmd_get_kb_page(args: argparse.Namespace) -> int:
 
 
 def cmd_add_kb_page(args: argparse.Namespace) -> int:
-    tags = args.tags.split(",") if args.tags else []
-    sources = args.source or []
+    tags = core.csv_to_list(args.tags)
+    sources = (args.source or []) + core.csv_to_list(getattr(args, "sources", ""))
     body = sys.stdin.read() if args.body_file == "-" else (args.body or "")
     data = core.add_kb_page(args.kb_id, type=args.type, title=args.title,
                             description=args.description or "", tags=tags,

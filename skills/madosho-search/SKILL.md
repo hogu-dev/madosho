@@ -1,6 +1,6 @@
 ---
 name: madosho-search
-description: Use when you need to search or read documents in a madosho RAG corpus from the command line, to run and read madosho's autonomous alchemy goals, or to read a server-owned knowledge base. Drives madosho-cli (search, search-doc, get-doc, list-corpora, list-documents, list-pipelines, list-goals, goal-runs, export-goal-run, run-goal, list-kbs, get-kb-page, search-kb) to gather cited evidence and answer questions over indexed documents and knowledge bases.
+description: Use when you need to search or read documents in a madosho RAG corpus from the command line, to run and read madosho's autonomous alchemy goals, or to read, search, and write a server-owned knowledge base. Drives madosho-cli (search, search-doc, get-doc, list-corpora, list-documents, list-pipelines, list-goals, goal-runs, export-goal-run, run-goal, list-kbs, get-kb-page, search-kb, add-kb-page, edit-kb-page) to gather cited evidence, answer questions over indexed documents and knowledge bases, and record findings back into a KB.
 ---
 
 # Drive madosho's document tools
@@ -60,12 +60,24 @@ JSON or empty, and any error prints to stderr with a non-zero exit.
   corpus). A KB is a corpus's own editable wiki of pages (summary / concept /
   entity) - a different thing from a searched document. Start here if you do
   not know a KB's id.
-- `madosho-cli search-kb <kb_id> "<query>" --json` -> full-text search over one
-  KB's pages, returning matching page summaries (title, slug, description).
+- `madosho-cli search-kb <kb_id> "<query>" --json` -> search one KB's pages by
+  meaning: fused page-level semantic + lexical (RRF) retrieval, returning matching
+  page summaries (title, slug, description). Degrades to lexical-only if the KB is
+  not indexed yet.
 - `madosho-cli get-kb-page <kb_id> <slug> --json` -> one KB page in full
   (frontmatter + body) by slug. This is a whole-page grab, not retrieval - the
   KB analog of `get-doc`. Typical flow: `list-kbs` -> `search-kb` to find a
   slug -> `get-kb-page` to read it whole.
+- `madosho-cli add-kb-page <kb_id> <type> "<title>" --json` -> write a new page
+  to record a durable finding. `type` is summary / concept / entity. Options:
+  `--description "<one line>"`, `--tags <comma,separated>`, `--sources
+  <comma,separated>` (or repeat `--source <ref>`), `--body "<text>"` (or
+  `--body-file <path-or-->`). Search or read the KB first to avoid a duplicate
+  title; the page is indexed automatically and findable by `search-kb` right
+  after. Only write when a user asks you to.
+- `madosho-cli edit-kb-page <kb_id> <slug> --json` -> update an existing page's
+  `--description` and/or `--body` (or `--body-file <path-or-->`). Prefer this over
+  a second `add-kb-page` when a page on the topic already exists.
 
 ## How to work
 
